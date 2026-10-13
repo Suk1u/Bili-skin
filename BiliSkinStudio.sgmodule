@@ -1,0 +1,24 @@
+#!name=B站装扮工作室
+#!desc=让哔哩哔哩 App 用上任意装扮（含付费、含抽奖款）。用法：在 App 里打开装扮商城或收藏集页面，左上角会出现「应用装扮」按钮，点一下即扫描当前页面的装扮；只有一套就直接注入，多套会弹列表让你选。然后杀掉后台重进 App 生效。按钮可拖动。注意：已下架的装扮 B站已不再下发图片包，只有之前存过才能用。
+#!author=海鸥 (Surge)
+#!category=哔哩哔哩
+#!icon=paintbrush
+#!system=ios
+#!requirement=CORE_VERSION>=20
+
+[Script]
+# 1. H5 页面与 Surge 的通信桥：接管 /x/surge-skin/*，直接返回假响应，不发网络请求。
+BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=262144,timeout=5,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 2. 应用装扮：把「当前装扮」换成注入的那套。
+BiliSkinApply = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin(?:\?.*)?$,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*），
+#    以及收藏集的「主题套装」预览页（/blackboard/fe/suit-preview.html，独立活动页）。
+BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 4. 嗅探：记下当前页面加载过的装扮，供「应用装扮」按钮取用。
+BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+[MITM]
+hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com
