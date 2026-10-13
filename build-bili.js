@@ -133,12 +133,12 @@ function check() {
     console.log('       跑：npm run build:bili -- --repo <用户名>/<仓库名>');
     bad = true;
   }
-  if (urls.length !== 3) {
-    console.log('\n[FAIL] 预期 3 条 [Script] 行，实际 ' + urls.length + ' 条。');
+  if (urls.length !== 4) {
+    console.log('\n[FAIL] 预期 4 条 [Script] 行，实际 ' + urls.length + ' 条。');
     bad = true;
   }
   if (unique.length !== 1) {
-    console.log('\n[FAIL] 三条 [Script] 行的 script-path 不一致。');
+    console.log('\n[FAIL] 四条 [Script] 行的 script-path 不一致。');
     bad = true;
   }
   if (!fs.existsSync(OUT_JS)) {
