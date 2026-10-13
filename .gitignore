@@ -1,6 +1,0 @@
-node_modules/
-
-# 构建产物默认不入库；只有 B站装扮工作室的两件分发文件需要提交
-dist/*
-!dist/bili_skin.js
-!dist/BiliSkinStudio.sgmodule
