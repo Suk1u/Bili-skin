@@ -117,7 +117,7 @@ npm run build:bili -- --check      # 校验模块与远端脚本是否对齐
 | `bili_skin.js` | **构建产物**，Surge 实际下载的文件，由上面两个生成 |
 | `scripts/build-bili.js` | 构建脚本 |
 | `scripts/test-bili-skin.js` | Surge 侧 44 个 mock 场景 |
-| `scripts/test-bili-h5.js` | H5 纯逻辑 44 个场景 |
+| `scripts/test-bili-h5.js` | H5 纯逻辑 49 个场景 |
 
 `bili_skin.js` 是产物但**必须入库**——Surge 要从这个 URL 下载它。改完 `src/` 后记得重新构建并推送。
 

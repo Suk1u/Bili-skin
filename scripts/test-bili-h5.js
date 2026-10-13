@@ -512,6 +512,53 @@ t('collectHint/已上线的不显示开售时间', function () {
   assert(html.indexOf('老收藏集') >= 0, '仍列出名字');
 });
 
+/* ===== 收藏集奖励解析 ===== */
+
+t('param/从 URL 取数字参数', function () {
+  const loc = { search: '?act_id=114675&lottery_id=114676&navhide=1', hash: '' };
+  eq(API.param(loc, 'act_id'), '114675', 'act_id');
+  eq(API.param(loc, 'lottery_id'), '114676', 'lottery_id');
+  eq(API.param(loc, 'nope'), '', '不存在返回空');
+});
+
+t('param/hash 路由也能取', function () {
+  eq(API.param({ search: '', hash: '#/home?act_id=999' }, 'act_id'), '999', 'hash');
+});
+
+t('mapRedeemIds/取 Suit 与 MaterialCombination 的 id', function () {
+  const raw = {
+    data: {
+      collect_list: [
+        { redeem_item_type: 1001, redeem_item_id: '' },
+        { redeem_item_type: 2, redeem_item_id: '1791739567001' },
+        { redeem_item_type: 5, redeem_item_id: '1791739296001&1791739013001' },
+        { redeem_item_type: 4, redeem_item_id: '37670' },
+        { redeem_item_type: 9, redeem_item_id: '999' }
+      ]
+    }
+  };
+  eq(API.mapRedeemIds(raw), ['1791739296001', '1791739013001', '37670'], '只留 type 4/5');
+});
+
+t('mapRedeemIds/忽略空值和过短 id', function () {
+  const raw = {
+    data: {
+      collect_list: [
+        { redeem_item_type: 5, redeem_item_id: '' },
+        { redeem_item_type: 5, redeem_item_id: '12' },
+        { redeem_item_type: 4, redeem_item_id: null }
+      ]
+    }
+  };
+  eq(API.mapRedeemIds(raw), [], '全部丢弃');
+});
+
+t('mapRedeemIds/空数据不炸', function () {
+  eq(API.mapRedeemIds(null), [], 'null');
+  eq(API.mapRedeemIds({}), [], 'empty');
+  eq(API.mapRedeemIds({ data: {} }), [], 'no collect_list');
+});
+
 /* ===== 构建一致性 ===== */
 
 function injectInto(html) {

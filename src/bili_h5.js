@@ -100,7 +100,17 @@
   /* ===================== B 站接口 ===================== */
 
   function apiSuitDetail(id) {
-    return jget(API + '/x/garb/mall/item/suit/v2?part=suit&item_id=' + id);
+    return jget(API + '/x/garb/mall/item/suit/v2?part=suit&item_id=' + id).then(function (r) {
+      if (toEquip(r)) return r;
+      /* 公开接口拿不到时试内部接口——预购 / 收藏集主题套装走这条 */
+      return jget(API + '/x/garb/internal/v2/mall/suit/detail?item_id=' + id + '&part=suit');
+    });
+  }
+  /* 收藏集的奖励清单（v2 才带「动态主题套装」，v1 不带） */
+  function apiCollectRewards(actId, lotteryId) {
+    var q = '/x/vas/dlc_act/lottery/home_detail/v2?act_id=' + actId;
+    if (lotteryId) q += '&lottery_id=' + lotteryId;
+    return jget(API + q);
   }
   /* 官方搜索：服务端搜，装扮(part_id=6)和收藏集(part_id=0)都会返回 */
   function apiSearch(kw) {
@@ -217,6 +227,32 @@
     return out.slice(0, MAX_RESOLVE);
   }
 
+  /* 从 URL 里取数字参数 */
+  function param(loc, name) {
+    var s = (loc.search || '') + '&' + (loc.hash || '');
+    var m = new RegExp('[?&]' + name + '=(\\d+)').exec(s);
+    return m ? m[1] : '';
+  }
+
+  /* 收藏集奖励 -> 可尝试的装扮 id。
+     type=4 Suit：redeem_item_id 本身就是装扮 id。
+     type=5 MaterialCombination（动态主题套装）：是若干子项 id，用 & 分隔，
+     能不能直接解析出父装扮待验证，先一并试。 */
+  function mapRedeemIds(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.collect_list) || [];
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i].redeem_item_type;
+      if (t !== 4 && t !== 5) continue;
+      var parts = String(list[i].redeem_item_id || '').split('&');
+      for (var j = 0; j < parts.length; j++) {
+        var s = parts[j].replace(/\D/g, '');
+        if (s.length >= 5) out.push(s);
+      }
+    }
+    return out;
+  }
+
   function mergeById() {
     var out = [];
     var seen = {};
@@ -326,6 +362,20 @@
     var merged = mergeById(sniffed, stateHits);
 
     var ids = collectIds(document, location);
+
+    /* 收藏集页：奖励清单里的 id 也一并试（「动态主题套装」在这里） */
+    var actId = param(location, 'act_id');
+    if (actId) {
+      try {
+        var extra = mapRedeemIds(
+          await apiCollectRewards(actId, param(location, 'lottery_id'))
+        );
+        for (var n = 0; n < extra.length; n++) {
+          if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);
+        }
+      } catch (e) {}
+    }
+
     for (var i = 0; i < ids.length; i++) {
       var dup = false;
       for (var k = 0; k < merged.length; k++) {
@@ -833,8 +883,10 @@
   /* 测试钩子 */
   window.__BSS_API__ = {
     idFrom: idFrom,
+    param: param,
     thumb: thumb,
     isTargetPage: isTargetPage,
+    mapRedeemIds: mapRedeemIds,
     mapSuit: mapSuit,
     mapSearch: mapSearch,
     mapCollectHits: mapCollectHits,
