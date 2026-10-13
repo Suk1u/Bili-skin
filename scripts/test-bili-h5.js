@@ -162,6 +162,33 @@ const DETAIL = {
   }
 };
 
+/* 搜索/目录响应：兜底列表用（装扮 part_id=6，收藏集 part_id=0） */
+const SEARCH = {
+  code: 0,
+  data: {
+    list: [
+      {
+        item_id: 37670,
+        name: '灵魂潮汐周年庆典',
+        group_name: '灵魂潮汐周年庆典',
+        part_id: 6,
+        properties: { image_cover: 'https://i0.hdslb.com/x.jpg', sale_bp_forever_raw: '2500' }
+      },
+      {
+        item_id: 114675,
+        name: '艾尔莎_Channel-艾尔莎只想宅在家',
+        part_id: 0,
+        properties: {
+          image_cover: 'https://i0.hdslb.com/y.jpg',
+          type: 'dlc_act',
+          dlc_act_status: '1',
+          dlc_sale_start_time: '1791891000'
+        }
+      }
+    ]
+  }
+};
+
 const tests = [];
 function t(name, fn) {
   tests.push({ name: name, fn: fn });
@@ -412,6 +439,77 @@ t('markEnter/刷新进入时间', function () {
   const after = env.__BSS_API__.enterTs();
   assert(after >= before, 'monotonic');
   assert(after >= t0 - 5 && after <= Date.now() + 5, 'updated to now');
+});
+
+/* ===== 全量目录（兜底） ===== */
+
+t('mapSearch/只留装扮，滤掉收藏集', function () {
+  const list = API.mapSearch(SEARCH);
+  eq(list.length, 1, '只保留 part_id=6');
+  eq(list[0].id, 37670, 'id');
+  eq(list[0].name, '灵魂潮汐周年庆典', 'name');
+  eq(list[0].cat, '灵魂潮汐周年庆典', 'group_name 当分类');
+  eq(list[0].cover, 'https://i0.hdslb.com/x.jpg', 'image_cover');
+  eq(list[0].paid, true, 'sale_bp 2500 -> 付费');
+});
+
+t('mapSearch/空数据不炸', function () {
+  eq(API.mapSearch(null).length, 0, 'null safe');
+  eq(API.mapSearch({}).length, 0, 'empty safe');
+  eq(API.mapSearch({ data: { list: null } }).length, 0, 'null list');
+});
+
+t('mapCatalogPage/整页映射', function () {
+  const list = API.mapCatalogPage(SEARCH);
+  eq(list.length, 2, '装扮 + 收藏集都收（目录接口只返回装扮）');
+  eq(list[0].id, 37670, 'first');
+});
+
+t('mapSuit/缺字段走默认值', function () {
+  const s = API.mapSuit({ item_id: 1, name: 'x' });
+  eq(s.cover, '', 'cover 默认空');
+  eq(s.cat, '', 'cat 默认空');
+  eq(s.paid, false, 'paid 默认 false');
+  eq(API.mapSuit(null).id, undefined, 'null 不炸');
+});
+
+t('mapCollectHits/认出收藏集并标记预约中', function () {
+  const hits = API.mapCollectHits(SEARCH);
+  eq(hits.length, 1, '只有 part_id=0 的');
+  eq(hits[0].name, '艾尔莎_Channel-艾尔莎只想宅在家', 'name');
+  eq(hits[0].upcoming, true, 'dlc_act_status=1 -> 预约中');
+  eq(hits[0].startAt, 1791891000, '开售时间戳');
+});
+
+t('mapCollectHits/已上线的收藏集不算预约', function () {
+  const hits = API.mapCollectHits({
+    data: { list: [{ part_id: 0, name: 'x', properties: { dlc_act_status: '2' } }] }
+  });
+  eq(hits[0].upcoming, false, 'status=2 -> 非预约');
+  eq(hits[0].startAt, 0, '无时间戳');
+});
+
+t('mapCollectHits/空数据不炸', function () {
+  eq(API.mapCollectHits(null).length, 0, 'null safe');
+  eq(API.mapCollectHits({ data: { list: null } }).length, 0, 'null list');
+});
+
+t('fmtTime/格式化开售时间', function () {
+  eq(API.fmtTime(1791891000), '2026-10-13 19:30', '本地时区格式化');
+  eq(API.fmtTime(0), '', '0 返回空');
+});
+
+t('collectHint/提示里带名字和开售时间', function () {
+  const html = API.collectHint(API.mapCollectHits(SEARCH), '艾尔莎');
+  assert(html.indexOf('是收藏集，不是装扮') >= 0, '说明是收藏集');
+  assert(html.indexOf('艾尔莎只想宅在家') >= 0, '带上收藏集名');
+  assert(html.indexOf('2026-10-13 19:30 开售') >= 0, '带上开售时间');
+});
+
+t('collectHint/已上线的不显示开售时间', function () {
+  const html = API.collectHint([{ name: '老收藏集', upcoming: false, startAt: 0 }], 'x');
+  assert(html.indexOf('开售') < 0, '不该出现开售字样');
+  assert(html.indexOf('老收藏集') >= 0, '仍列出名字');
 });
 
 /* ===== 构建一致性 ===== */

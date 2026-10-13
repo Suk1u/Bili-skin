@@ -102,6 +102,16 @@
   function apiSuitDetail(id) {
     return jget(API + '/x/garb/mall/item/suit/v2?part=suit&item_id=' + id);
   }
+  /* 官方搜索：服务端搜，装扮(part_id=6)和收藏集(part_id=0)都会返回 */
+  function apiSearch(kw) {
+    return jget(
+      API + '/x/garb/v2/mall/home/search?key_word=' + encodeURIComponent(kw) + '&pn=1&ps=20'
+    );
+  }
+  /* 装扮目录分页：part_id=6 是装扮，全站约 3400 套 */
+  function apiCatalogPage(pn) {
+    return jget(API + '/x/garb/v2/mall/partition/item/list?part_id=6&pn=' + pn + '&sort_type=2');
+  }
 
   /* ===================== 纯逻辑（可测试） ===================== */
 
@@ -219,6 +229,83 @@
         out.push(e);
       }
     }
+    return out;
+  }
+
+  /* ===================== 全量目录（兜底用） ===================== */
+
+  /* 目录条目 -> 卡片数据。只有 id / 名字 / 封面，点开再去拉装扮包。 */
+  function mapSuit(it) {
+    it = it || {};
+    var p = it.properties || {};
+    return {
+      id: it.item_id,
+      name: it.name,
+      cover: p.image_cover || '',
+      cat: it.group_name || '',
+      paid: Number(p.sale_bp_forever_raw || 0) > 0
+    };
+  }
+
+  /* 搜索响应：收藏集混在里面，只留装扮 */
+  function mapSearch(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.list) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].part_id === 6) out.push(mapSuit(list[i]));
+    }
+    return out;
+  }
+
+  /* 搜索响应里的收藏集（part_id=0）。用户搜的常常是收藏集名，
+     收藏集不是装扮，但它的「主题套装」上线后会变成装扮。 */
+  function mapCollectHits(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.list) || [];
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (it.part_id !== 0) continue;
+      var p = it.properties || {};
+      out.push({
+        name: it.name,
+        upcoming: String(p.dlc_act_status) === '1',
+        startAt: Number(p.dlc_sale_start_time || 0)
+      });
+    }
+    return out;
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts * 1000);
+    function p2(n) {
+      return (n < 10 ? '0' : '') + n;
+    }
+    return (
+      d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +
+      ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes())
+    );
+  }
+
+  function collectHint(hits, kw) {
+    var lines = [];
+    for (var i = 0; i < hits.length; i++) {
+      var h = hits[i];
+      lines.push(
+        '· ' + h.name + (h.upcoming && h.startAt ? '\n    ' + fmtTime(h.startAt) + ' 开售' : '')
+      );
+    }
+    return emptyHtml(
+      '「' + kw + '」是收藏集，不是装扮。\n收藏集的「主题套装」要等它上线后才会出现：\n\n' +
+        lines.join('\n') +
+        '\n\n上线后再搜一次就能找到。'
+    );
+  }
+
+  function mapCatalogPage(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.list) || [];
+    for (var i = 0; i < list.length; i++) out.push(mapSuit(list[i]));
     return out;
   }
 
@@ -386,7 +473,7 @@
   function emptyHtml(text) {
     return (
       '<div style="padding:44px 0;text-align:center;color:#9499a0;font-size:13px;' +
-      'line-height:1.7">' + esc(text) + '</div>'
+      'line-height:1.8;white-space:pre-line">' + esc(text) + '</div>'
     );
   }
 
@@ -448,7 +535,7 @@
     }, 2600);
   }
 
-  /* 本页没找到：给清除入口 + 藏馆里之前用过的 */
+  /* 本页没找到：给「浏览全部」兜底 + 藏馆里之前用过的 */
   async function showEmpty() {
     var cur = null;
     var gal = [];
@@ -461,11 +548,16 @@
       gal = (r && r.data) || [];
     } catch (e) {}
 
-    var acts = [];
-    if (cur && cur.name) acts.push({ key: 'clear', label: '清除注入', pink: true });
+    var acts = [{ key: 'browse', label: '浏览全部装扮', pink: true }];
+    if (cur && cur.name) acts.push({ key: 'clear', label: '清除注入' });
+
+    var isCard = /digital-card/.test(location.pathname || '');
+    var tip = isCard
+      ? '收藏集页面本身不带装扮数据。\n点「浏览全部装扮」按名字找，\n或进收藏集的「主题套装」页再点按钮。'
+      : '本页没找到可用的装扮。\n点「浏览全部装扮」按名字或 ID 找。';
 
     var body =
-      emptyHtml('本页没找到可用的装扮。\n到装扮详情页或收藏集页再试一次。') +
+      emptyHtml(tip) +
       (gal.length
         ? '<div style="margin:2px 0 10px;font-size:13px;color:#61666d">藏馆 · 之前应用过的</div>' +
           gridHtml(gal)
@@ -474,6 +566,13 @@
     openSheet('应用装扮', cur && cur.name ? '当前：' + cur.name : '', acts, body);
     bindGridActions(panel.querySelector('#bss-body'), gal);
 
+    var browseBtn = panel.querySelector('[data-act="browse"]');
+    if (browseBtn) {
+      browseBtn.addEventListener('click', function () {
+        openBrowse();
+      });
+    }
+
     var clearBtn = panel.querySelector('[data-act="clear"]');
     if (clearBtn) {
       clearBtn.addEventListener('click', async function () {
@@ -481,6 +580,118 @@
         closePanel();
         toast('已清除注入的装扮', true);
       });
+    }
+  }
+
+  /* 兜底：全站装扮目录（约 3400 套）。
+     搜索走服务端接口，浏览走分页 + 触底加载。 */
+  async function openBrowse() {
+    openSheet(
+      '全部装扮',
+      '搜名字，或往下翻看全部',
+      [],
+      '<input id="bss-q" placeholder="搜索装扮名，例如「灵魂潮汐」" ' +
+        'style="width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +
+        'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none">' +
+        '<div id="bss-grid" style="margin-top:12px"></div>' +
+        '<div id="bss-more" style="padding:18px 0;text-align:center;font-size:12px;' +
+        'color:#9499a0"></div>'
+    );
+
+    var body = panel.querySelector('#bss-body');
+    var qEl = body.querySelector('#bss-q');
+    var gridEl = body.querySelector('#bss-grid');
+    var moreEl = body.querySelector('#bss-more');
+
+    var st = { pn: 0, done: false, loading: false, kw: '', timer: 0 };
+
+    function loadMore() {
+      if (st.loading || st.done || st.kw) return;
+      st.loading = true;
+      moreEl.textContent = '加载中…';
+      var pn = st.pn + 1;
+      apiCatalogPage(pn)
+        .then(function (raw) {
+          var list = mapCatalogPage(raw);
+          if (!list.length) {
+            st.done = true;
+            moreEl.textContent = '没有更多了';
+          } else {
+            st.pn = pn;
+            gridEl.insertAdjacentHTML('beforeend', gridHtml(list));
+            moreEl.textContent = '';
+          }
+        })
+        .catch(function (e) {
+          moreEl.textContent = '加载失败：' + e.message;
+        })
+        .then(function () {
+          st.loading = false;
+        });
+    }
+
+    function doSearch(kw) {
+      if (!kw) {
+        gridEl.innerHTML = '';
+        st.pn = 0;
+        st.done = false;
+        moreEl.textContent = '';
+        return loadMore();
+      }
+      moreEl.textContent = '搜索中…';
+      apiSearch(kw)
+        .then(function (raw) {
+          var list = mapSearch(raw);
+          if (list.length) {
+            gridEl.innerHTML = gridHtml(list);
+          } else {
+            var hits = mapCollectHits(raw);
+            gridEl.innerHTML = hits.length
+              ? collectHint(hits, kw)
+              : emptyHtml('没搜到「' + kw + '」\n换个关键词试试');
+          }
+          moreEl.textContent = '';
+        })
+        .catch(function (e) {
+          moreEl.textContent = '搜索失败：' + e.message;
+        });
+    }
+
+    qEl.addEventListener('input', function () {
+      st.kw = qEl.value.trim();
+      clearTimeout(st.timer);
+      st.timer = setTimeout(function () {
+        doSearch(st.kw);
+      }, 400);
+    });
+
+    /* 触底加载更多 */
+    body.addEventListener('scroll', function () {
+      if (st.kw || st.loading || st.done) return;
+      if (body.scrollTop + body.clientHeight >= body.scrollHeight - 400) loadMore();
+    });
+
+    /* 目录条目只有 id / 名字 / 封面，点了再去拉装扮包 */
+    gridEl.addEventListener('click', function (e) {
+      var ap = e.target.closest && e.target.closest('[data-apply]');
+      var card = ap || (e.target.closest && e.target.closest('[data-id]'));
+      if (!card) return;
+      var id = card.getAttribute('data-apply') || card.getAttribute('data-id');
+      closePanel();
+      applyById(id);
+    });
+
+    loadMore();
+  }
+
+  async function applyById(id) {
+    try {
+      var equip = toEquip(await apiSuitDetail(id));
+      if (!equip) throw new Error('这套装扮拿不到装扮包');
+      await doApply(equip);
+    } catch (e) {
+      if (launcher) launcher.textContent = '应用装扮';
+      toast('失败：' + e.message);
     }
   }
 
@@ -624,6 +835,12 @@
     idFrom: idFrom,
     thumb: thumb,
     isTargetPage: isTargetPage,
+    mapSuit: mapSuit,
+    mapSearch: mapSearch,
+    mapCollectHits: mapCollectHits,
+    fmtTime: fmtTime,
+    collectHint: collectHint,
+    mapCatalogPage: mapCatalogPage,
     equipFrom: equipFrom,
     toEquip: toEquip,
     harvest: harvest,
