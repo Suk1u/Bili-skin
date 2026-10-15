@@ -559,6 +559,147 @@ t('mapRedeemIds/空数据不炸', function () {
   eq(API.mapRedeemIds({ data: {} }), [], 'no collect_list');
 });
 
+/* ===== 整套装扮：多组件 ===== */
+
+const FULL_DETAIL = {
+  code: 0,
+  data: {
+    item_id: 67790,
+    name: '2024愚人节·小会员',
+    suit_items: {
+      skin: [
+        {
+          item_id: 67791,
+          name: '2024愚人节·小会员',
+          properties: {
+            package_url: 'https://i0.hdslb.com/bfs/garb/zip/x.zip',
+            package_md5: 'md5x',
+            ver: 1711761021,
+            image_preview: 'https://i0.hdslb.com/p.jpg',
+            color: '#ffffff',
+            color_mode: 'dark'
+          }
+        }
+      ],
+      loading: [
+        {
+          item_id: 67792,
+          name: '加载动画',
+          properties: {
+            loading_url: 'https://i0.hdslb.com/l.webp',
+            loading_frame_url: 'https://i0.hdslb.com/f.webp',
+            ver: 1711761022
+          }
+        }
+      ],
+      card: [{ item_id: 67794, name: '动态卡片', properties: { image: 'https://i0.hdslb.com/c.png' } }],
+      card_bg: [{ item_id: 67793, name: '评论装扮', properties: { image: 'https://i0.hdslb.com/cb.png' } }],
+      thumbup: [{ item_id: 67796, name: '点赞特效', properties: { image_ani: 'https://i0.hdslb.com/t.png' } }],
+      play_icon: [{ item_id: 67797, name: '进度条', properties: { static_icon_image: 'https://i0.hdslb.com/pi.png' } }],
+      space_bg: [{ item_id: 67798, name: '空间海报', properties: { image1_portrait: 'https://i0.hdslb.com/s1.png' } }],
+      emoji_package: [{ item_id: 67799, name: '表情包', properties: { image: 'https://i0.hdslb.com/e.png' } }]
+    }
+  }
+};
+
+t('equipFrom/整套 suit_items 全收进 components', function () {
+  const e = API.equipFrom(FULL_DETAIL.data, FULL_DETAIL.data.suit_items.skin[0]);
+  assert(e, 'built');
+  eq(
+    Object.keys(e.components).sort(),
+    ['card', 'card_bg', 'emoji_package', 'loading', 'play_icon', 'skin', 'space_bg', 'thumbup'],
+    '八个组件全收'
+  );
+  eq(e.components.loading.loading_url, 'https://i0.hdslb.com/l.webp', 'loading_url');
+  eq(e.components.loading.url, 'https://i0.hdslb.com/l.webp', 'url 归一');
+  eq(e.components.card.image, 'https://i0.hdslb.com/c.png', 'card image');
+  eq(e.components.thumbup.url, 'https://i0.hdslb.com/t.png', 'thumbup url 归一');
+  eq(e.components.space_bg.url, 'https://i0.hdslb.com/s1.png', 'space_bg url 归一');
+  eq(e.id, 67790, 'id 取容器 item_id');
+  eq(e.name, '2024愚人节·小会员', 'name 取容器');
+});
+
+t('toEquip/整套详情带上 loading', function () {
+  const e = API.toEquip(FULL_DETAIL);
+  eq(e.id, 67790, 'id');
+  eq(!!e.components.loading, true, 'loading 带上');
+  eq(!!e.components.card, true, 'card 带上');
+});
+
+t('componentOf/无 properties 与空值安全', function () {
+  const c = API.componentOf('card', { item_id: 5, name: 'x' });
+  eq(c.id, 5, 'id');
+  eq(c.name, 'x', 'name');
+  eq(c.url, '', 'no url');
+  eq(API.componentOf('card', null), null, 'null safe');
+});
+
+t('componentBadges/列出非主题组件', function () {
+  const e = API.equipFrom(FULL_DETAIL.data, FULL_DETAIL.data.suit_items.skin[0]);
+  eq(
+    API.componentBadges(e),
+    ['加载动画', '动态卡片', '评论装扮', '点赞特效', '进度条', '空间海报', '表情包'],
+    'badges'
+  );
+  eq(API.componentBadges({ isSplash: true }), ['开屏动画'], 'splash badge');
+  eq(API.componentBadges({}), [], 'empty');
+});
+
+t('collectInfos/兼容新旧两种结构', function () {
+  eq(API.collectInfos({ data: { collect_list: [1, 2] } }).length, 2, '旧版数组');
+  eq(API.collectInfos({ data: { collect_list: { collect_infos: [1, 2, 3] } } }).length, 3, '新版嵌套');
+  eq(API.collectInfos({}), [], '空');
+});
+
+t('mapRedeemIds/新版 collect_infos', function () {
+  const raw = {
+    data: {
+      collect_list: {
+        collect_infos: [
+          { redeem_item_type: 4, redeem_item_id: '37670' },
+          { redeem_item_type: 5, redeem_item_id: '1791739296001&1791739013001' }
+        ]
+      }
+    }
+  };
+  eq(API.mapRedeemIds(raw), ['37670', '1791739296001', '1791739013001'], '新版解析');
+});
+
+t('mapRedeemItems/带名字、预览图与跳转', function () {
+  const raw = {
+    data: {
+      collect_list: {
+        collect_infos: [
+          {
+            redeem_item_type: 4,
+            redeem_item_id: '37670',
+            redeem_item_name: '灵魂潮汐',
+            redeem_item_image: 'https://i0.hdslb.com/i.jpg',
+            garb_suit_url: 'https://www.bilibili.com/h5/mall/suit/detail?id=37670'
+          },
+          { redeem_item_type: 1, redeem_item_id: 'x' }
+        ]
+      }
+    }
+  };
+  const out = API.mapRedeemItems(raw);
+  eq(out.length, 1, '只留 type 4/5');
+  eq(out[0].name, '灵魂潮汐', 'name');
+  eq(out[0].jump.indexOf('37670') >= 0, true, 'jump');
+});
+
+t('mapSplashItems/开屏图 -> 候选卡片', function () {
+  const out = API.mapSplashItems([
+    { id: 7, thumb: 'https://i0.hdslb.com/s.jpg', logo_url: 'https://i0.hdslb.com/l.png' },
+    { id: 8 }
+  ]);
+  eq(out.length, 1, '缺 thumb 的丢掉');
+  eq(out[0].isSplash, true, '标记');
+  eq(out[0].preview, 'https://i0.hdslb.com/s.jpg', '预览图');
+  eq(out[0].splash.id, 7, 'splash id');
+  eq(API.mapSplashItems(null), [], 'null safe');
+});
+
 /* ===== 构建一致性 ===== */
 
 function injectInto(html) {

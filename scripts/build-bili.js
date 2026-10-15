@@ -133,8 +133,8 @@ function check() {
     console.log('       跑：npm run build:bili -- --repo <用户名>/<仓库名>');
     bad = true;
   }
-  if (urls.length !== 4) {
-    console.log('\n[FAIL] 预期 4 条 [Script] 行，实际 ' + urls.length + ' 条。');
+  if (urls.length !== 6) {
+    console.log('\n[FAIL] 预期 6 条 [Script] 行，实际 ' + urls.length + ' 条。');
     bad = true;
   }
   if (unique.length !== 1) {

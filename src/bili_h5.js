@@ -2,11 +2,17 @@
  * 哔哩哔哩装扮工作室 —— 注入到 www.bilibili.com/h5/mall/* 的页面脚本
  *
  * 按钮只有一个：「应用装扮」。点它就去**扫描当前页面**上出现的装扮，而不是翻全站目录。
- * 候选来自四个地方，按可靠性排序：
+ * 候选来自五个地方，按可靠性排序：
  *   1. Surge 嗅探到的接口响应（本页加载过的 x/garb/* x/vas/* 里含装扮包的条目）
  *   2. 页面 JS 状态（__INITIAL_MIRROR__ / __INITIAL_STATE__ 等）里递归找出的装扮对象
  *   3. DOM 里指向装扮详情页的链接
  *   4. 当前 URL 的参数
+ *   5. 收藏集/抽奖页：collect_infos 里的兑换物 id，以及主题套装预览链接
+ *
+ * 一套「装扮套装」（suit）不只有主题皮肤。suit_items 里可能有：
+ *   skin（个性主题）loading（加载动画）card（动态卡片）card_bg（评论装扮）
+ *   thumbup（点赞特效）play_icon（进度条）space_bg（空间海报）emoji_package（表情包）
+ * 全部一起抓，写进 equip.components，Surge 侧按类型分别注入到对应接口。
  *
  * 拿到候选后：1 个直接应用，多个弹选择列表，0 个给空状态（可清除注入 / 从藏馆里挑）。
  *
@@ -23,6 +29,30 @@
   var THUMB = '@360w_360h_1c.webp';
   var POS_KEY = 'bss_btn_pos';
   var MAX_RESOLVE = 8;
+
+  /* suit_items 里的全部组件类型。顺序即展示顺序。 */
+  var COMPONENTS = [
+    'skin',
+    'loading',
+    'card',
+    'card_bg',
+    'thumbup',
+    'play_icon',
+    'space_bg',
+    'emoji_package'
+  ];
+
+  /* 组件中文名，用于卡片上的小标签 */
+  var COMPONENT_LABEL = {
+    skin: '主题',
+    loading: '加载动画',
+    card: '动态卡片',
+    card_bg: '评论装扮',
+    thumbup: '点赞特效',
+    play_icon: '进度条',
+    space_bg: '空间海报',
+    emoji_package: '表情包'
+  };
 
   /* 本页进入时间：用来过滤 Surge 嗅探到的候选，只留当前页面的。
      注入点选在 </head>，所以这个时间早于 SPA 发起请求。 */
@@ -96,6 +126,15 @@
   function bridgeSeen(since) {
     return bget('seen?since=' + (since || 0));
   }
+  function bridgeSelfMid(mid) {
+    return bpost('selfmid', { mid: mid });
+  }
+  function bridgeSplashList() {
+    return bget('splash/list');
+  }
+  function bridgeSplashSet(sp) {
+    return bpost('splash/set', sp);
+  }
 
   /* ===================== B 站接口 ===================== */
 
@@ -106,11 +145,26 @@
       return jget(API + '/x/garb/internal/v2/mall/suit/detail?item_id=' + id + '&part=suit');
     });
   }
-  /* 收藏集的奖励清单（v2 才带「动态主题套装」，v1 不带） */
+  /* 装扮详情（v2）。收藏集的主题套装也用这个 id 直接查。 */
+  function apiSuitDetailV2(id) {
+    return jget(API + '/x/garb/v2/mall/suit/detail?item_id=' + id + '&part=suit');
+  }
+  /* 收藏集的奖励清单（v2 才带「动态主题套装」，v1 不带）。
+     响应结构：data.collect_list.collect_infos[]（新版）或 data.collect_list[]（旧版）。 */
   function apiCollectRewards(actId, lotteryId) {
     var q = '/x/vas/dlc_act/lottery/home_detail/v2?act_id=' + actId;
     if (lotteryId) q += '&lottery_id=' + lotteryId;
     return jget(API + q);
+  }
+  /* 收藏集主页详情（权威接口，返回 collect_infos 里的兑换物） */
+  function apiLotteryDetail(actId, lotteryId) {
+    var q = '/x/vas/dlc_act/lottery_home_detail?act_id=' + actId;
+    if (lotteryId) q += '&lottery_id=' + lotteryId;
+    return jget(API + q);
+  }
+  /* 收藏集卡片的开屏信息（收藏集专属开屏动画） */
+  function apiCollectSplash(actId) {
+    return jget(API + '/x/vas/dlc_act/card/splash_info?act_id=' + actId);
   }
   /* 官方搜索：服务端搜，装扮(part_id=6)和收藏集(part_id=0)都会返回 */
   function apiSearch(kw) {
@@ -122,33 +176,84 @@
   function apiCatalogPage(pn) {
     return jget(API + '/x/garb/v2/mall/partition/item/list?part_id=6&pn=' + pn + '&sort_type=2');
   }
+  /* 当前登录用户 mid（用于 Surge 侧只改自己的评论装扮） */
+  function apiNav() {
+    return jget(API + '/x/web-interface/nav');
+  }
 
   /* ===================== 纯逻辑（可测试） ===================== */
 
-  /* 一个「容器 + skin 子项」-> user_equip 配置 */
+  /* skin 组件的配色字段 -> user_equip.data */
+  function skinData(p) {
+    p = p || {};
+    return {
+      color_mode: p.color_mode || 'light',
+      color: p.color || '#212121',
+      color_second_page: p.color_second_page || '#ffffff',
+      side_bg_color: p.side_bg_color || p.color_second_page || '#ffffff',
+      tail_color: p.tail_color || '#996c00',
+      tail_color_selected: p.tail_color_selected || '#0d6872',
+      tail_icon_ani: String(p.tail_icon_ani) === 'true',
+      tail_icon_ani_mode: p.tail_icon_ani_mode || 'once',
+      tail_icon_mode: p.tail_icon_mode || 'img'
+    };
+  }
+
+  /* 一个 suit_items 子项 -> 归一化组件对象。
+     把 properties 摊平到顶层，再补上 item_id / name，Surge 侧按类型取用。 */
+  function componentOf(kind, entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    var p = entry.properties || {};
+    var out = { kind: kind, id: entry.item_id || 0, name: entry.name || '' };
+    for (var k in p) {
+      if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
+    }
+    /* 各类型的「包/图」地址做一次归一，方便 Surge 侧统一读取 */
+    if (kind === 'loading') {
+      out.url = p.loading_url || '';
+      out.frame_url = p.loading_frame_url || '';
+    } else if (kind === 'skin') {
+      out.url = p.package_url || '';
+      out.md5 = p.package_md5 || '';
+    } else if (kind === 'space_bg') {
+      out.url = p.image1_portrait || p.image1_landscape || p.image || '';
+    } else {
+      out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';
+    }
+    return out;
+  }
+
+  /* 一个「容器 + skin 子项」-> user_equip 配置。
+     同时把容器 suit_items 里的其它组件（loading/card/…）一并收进 components。 */
   function equipFrom(container, skin) {
     var p = (skin && skin.properties) || {};
     if (!p.package_url) return null;
     var item = (container && container.item) || {};
-    return {
-      id: item.item_id || (skin && skin.item_id) || 0,
-      name: item.name || (skin && skin.name) || '',
+    var equip = {
+      id: item.item_id || (container && container.item_id) || (skin && skin.item_id) || 0,
+      name: item.name || (container && container.name) || (skin && skin.name) || '',
       preview: p.image_preview || p.image_cover || '',
       ver: Number(p.ver) || 1700000000,
       package_url: p.package_url,
       package_md5: p.package_md5 || '',
-      data: {
-        color_mode: p.color_mode || 'light',
-        color: p.color || '#212121',
-        color_second_page: p.color_second_page || '#ffffff',
-        side_bg_color: p.side_bg_color || p.color_second_page || '#ffffff',
-        tail_color: p.tail_color || '#996c00',
-        tail_color_selected: p.tail_color_selected || '#0d6872',
-        tail_icon_ani: String(p.tail_icon_ani) === 'true',
-        tail_icon_ani_mode: p.tail_icon_ani_mode || 'once',
-        tail_icon_mode: p.tail_icon_mode || 'img'
-      }
+      data: skinData(p),
+      components: {}
     };
+
+    /* 把整套套装的所有组件都收进来。没有 suit_items 时至少放进 skin 自己。 */
+    var si = (container && container.suit_items) || null;
+    if (si && typeof si === 'object') {
+      for (var i = 0; i < COMPONENTS.length; i++) {
+        var kind = COMPONENTS[i];
+        var arr = si[kind];
+        var c = componentOf(kind, Array.isArray(arr) ? arr[0] : arr);
+        if (c) equip.components[kind] = c;
+      }
+    }
+    if (!equip.components.skin) {
+      equip.components.skin = componentOf('skin', skin);
+    }
+    return equip;
   }
 
   /* 装扮详情响应 -> user_equip 配置 */
@@ -179,7 +284,7 @@
       if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
       try {
         harvest(node[k], out, depth + 1);
-      } catch (e) {}
+      } catch (err) {}
     }
   }
 
@@ -219,7 +324,7 @@
       var links = doc.querySelectorAll ? doc.querySelectorAll('a[href]') : [];
       for (var i = 0; i < links.length; i++) {
         var href = links[i].getAttribute('href') || '';
-        if (!/suit\/detail|mall/i.test(href)) continue;
+        if (!/suit\/detail|mall|suit-preview|garbDetail/i.test(href)) continue;
         add(idFrom(href));
       }
     } catch (e) {}
@@ -236,19 +341,47 @@
 
   /* 收藏集奖励 -> 可尝试的装扮 id。
      type=4 Suit：redeem_item_id 本身就是装扮 id。
-     type=5 MaterialCombination（动态主题套装）：是若干子项 id，用 & 分隔，
-     能不能直接解析出父装扮待验证，先一并试。 */
+     type=5 MaterialCombination（动态主题套装）：是若干子项 id，用 & 分隔。
+     兼容两种 collect_list 结构：
+       新版 data.collect_list.collect_infos[]（lottery_home_detail）
+       旧版 data.collect_list[]（lottery/home_detail/v2） */
+  function collectInfos(raw) {
+    var cl = raw && raw.data && raw.data.collect_list;
+    if (!cl) return [];
+    if (Array.isArray(cl)) return cl;
+    if (Array.isArray(cl.collect_infos)) return cl.collect_infos;
+    return [];
+  }
+
   function mapRedeemIds(raw) {
     var out = [];
-    var list = (raw && raw.data && raw.data.collect_list) || [];
+    var list = collectInfos(raw);
     for (var i = 0; i < list.length; i++) {
-      var t = list[i].redeem_item_type;
+      var it = list[i] || {};
+      var t = Number(it.redeem_item_type);
       if (t !== 4 && t !== 5) continue;
-      var parts = String(list[i].redeem_item_id || '').split('&');
+      var parts = String(it.redeem_item_id || '').split('&');
       for (var j = 0; j < parts.length; j++) {
         var s = parts[j].replace(/\D/g, '');
         if (s.length >= 5) out.push(s);
       }
+    }
+    return out;
+  }
+
+  /* 收藏集兑换物 -> 装扮候选（id + 名字 + 预览图），用于空状态里给线索 */
+  function mapRedeemItems(raw) {
+    var out = [];
+    var list = collectInfos(raw);
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i] || {};
+      var t = Number(it.redeem_item_type);
+      if (t !== 4 && t !== 5) continue;
+      var name = it.redeem_item_name || '';
+      var img = it.redeem_item_image || '';
+      var jump = it.jump_url || it.garb_suit_url || '';
+      if (!name && !img && !jump) continue;
+      out.push({ name: name, preview: img, jump: jump, type: t });
     }
     return out;
   }
@@ -264,6 +397,38 @@
         seen[e.id] = 1;
         out.push(e);
       }
+    }
+    return out;
+  }
+
+  /* 一套装扮带了哪些组件（用于卡片角标） */
+  function componentBadges(it) {
+    if (it && it.isSplash) return ['开屏动画'];
+    var c = it && it.components;
+    if (!c) return [];
+    var out = [];
+    for (var i = 0; i < COMPONENTS.length; i++) {
+      var k = COMPONENTS[i];
+      if (k === 'skin') continue;
+      if (c[k]) out.push(COMPONENT_LABEL[k] || k);
+    }
+    return out;
+  }
+
+  /* Surge 侧嗅探到的开屏图 -> 候选卡片。thumb 是图片地址。 */
+  function mapSplashItems(list) {
+    var out = [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i] || {};
+      if (!it.thumb) continue;
+      out.push({
+        id: 'sp' + (it.id || i),
+        name: '开屏动画 #' + (it.id || i + 1),
+        preview: it.thumb,
+        isSplash: true,
+        splash: { id: it.id, thumb: it.thumb, logo_url: it.logo_url || '', duration: 3000 }
+      });
     }
     return out;
   }
@@ -303,6 +468,7 @@
       if (it.part_id !== 0) continue;
       var p = it.properties || {};
       out.push({
+        id: it.item_id,
         name: it.name,
         upcoming: String(p.dlc_act_status) === '1',
         startAt: Number(p.dlc_sale_start_time || 0)
@@ -363,17 +529,23 @@
 
     var ids = collectIds(document, location);
 
-    /* 收藏集页：奖励清单里的 id 也一并试（「动态主题套装」在这里） */
+    /* 收藏集页：奖励清单里的 id 也一并试（「动态主题套装」在这里）。
+       act_id 在 URL 上；lottery_id 可能没有，缺了拿不到数据，两个都试一遍。 */
     var actId = param(location, 'act_id');
     if (actId) {
+      var rawList = [];
       try {
-        var extra = mapRedeemIds(
-          await apiCollectRewards(actId, param(location, 'lottery_id'))
-        );
+        rawList.push(await apiLotteryDetail(actId, param(location, 'lottery_id')));
+      } catch (e) {}
+      try {
+        rawList.push(await apiCollectRewards(actId, param(location, 'lottery_id')));
+      } catch (e) {}
+      for (var r2 = 0; r2 < rawList.length; r2++) {
+        var extra = mapRedeemIds(rawList[r2]);
         for (var n = 0; n < extra.length; n++) {
           if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);
         }
-      } catch (e) {}
+      }
     }
 
     for (var i = 0; i < ids.length; i++) {
@@ -391,12 +563,35 @@
       } catch (err) {}
     }
 
+    /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list */
+    try {
+      var sr = await bridgeSplashList();
+      var splashItems = mapSplashItems(sr && sr.data);
+      for (var s = 0; s < splashItems.length; s++) merged.push(splashItems[s]);
+    } catch (err2) {}
+
     return merged;
+  }
+
+  /* 把当前登录 mid 交给 Surge，用于「只改自己的评论装扮」 */
+  function reportSelfMid() {
+    apiNav()
+      .then(function (r) {
+        var mid = r && r.data && r.data.mid;
+        if (mid) return bridgeSelfMid(mid);
+      })
+      .catch(function () {});
   }
 
   /* ===================== 应用 ===================== */
 
   async function applyEquip(equip) {
+    /* 开屏动画走单独的存储与注入点 */
+    if (equip && equip.isSplash) {
+      var sr = await bridgeSplashSet(equip.splash);
+      if (!sr || sr.code !== 0) throw new Error((sr && sr.msg) || '保存失败');
+      return equip;
+    }
     try {
       await bridgeGalleryAdd(equip);
     } catch (e) {}
@@ -431,6 +626,22 @@
   /* ===================== 卡片 ===================== */
 
   function cardHtml(it) {
+    var badges = componentBadges(it);
+    var badgeHtml = badges.length
+      ? '<div style="position:absolute;left:6px;top:6px;display:flex;flex-wrap:wrap;gap:4px;' +
+        'max-width:90%">' +
+        badges
+          .map(function (b) {
+            return (
+              '<span style="font-size:10px;line-height:16px;padding:0 6px;border-radius:8px;' +
+              'background:rgba(0,0,0,.55);color:#fff">' +
+              esc(b) +
+              '</span>'
+            );
+          })
+          .join('') +
+        '</div>'
+      : '';
     return (
       '<div data-id="' + it.id + '" style="background:#fff;border-radius:12px;overflow:hidden;' +
       'box-shadow:0 1px 6px rgba(0,0,0,.07);cursor:pointer">' +
@@ -439,6 +650,7 @@
         ? '<img src="' + esc(thumb(it.preview)) + '" loading="lazy" ' +
           'style="display:block;width:100%;height:100%;object-fit:cover">'
         : '') +
+      badgeHtml +
       '</div>' +
       '<div style="padding:8px 10px 10px">' +
       '<div style="font-size:13px;line-height:1.35;color:#18191c;overflow:hidden;' +
@@ -576,7 +788,13 @@
     try {
       await applyEquip(equip);
       if (launcher) launcher.textContent = '已应用';
-      toast('已注入「' + equip.name + '」\n杀掉后台重进 B 站即可生效', true);
+      var extra = componentBadges(equip);
+      toast(
+        '已注入「' + equip.name + '」' +
+          (extra.length ? '\n含 ' + extra.join(' / ') : '') +
+          '\n杀掉后台重进 B 站即可生效',
+        true
+      );
     } catch (e) {
       toast('失败：' + e.message);
     }
@@ -835,9 +1053,15 @@
 
   /* 按钮该出现的页面：
      - /h5/mall/*                装扮商城、详情页、收藏集
-     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页） */
+     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页）
+     - /garb/collection-hall/*   收藏集大厅
+     注意 /h5/garb/draw-card 这类抽卡页不放按钮——那里没有装扮包数据。 */
   function isTargetPage(p) {
-    return /h5\/mall/.test(p) || /blackboard\/fe\/suit-preview\.html/.test(p);
+    return (
+      /h5\/mall/.test(p) ||
+      /blackboard\/fe\/suit-preview\.html/.test(p) ||
+      /garb\/collection-hall/.test(p)
+    );
   }
 
   function route() {
@@ -880,13 +1104,19 @@
   if (document.body) route();
   else document.addEventListener('DOMContentLoaded', route);
 
+  reportSelfMid();
+
   /* 测试钩子 */
   window.__BSS_API__ = {
+    COMPONENTS: COMPONENTS,
+    COMPONENT_LABEL: COMPONENT_LABEL,
     idFrom: idFrom,
     param: param,
     thumb: thumb,
     isTargetPage: isTargetPage,
     mapRedeemIds: mapRedeemIds,
+    mapRedeemItems: mapRedeemItems,
+    collectInfos: collectInfos,
     mapSuit: mapSuit,
     mapSearch: mapSearch,
     mapCollectHits: mapCollectHits,
@@ -899,6 +1129,10 @@
     scanState: scanState,
     collectIds: collectIds,
     mergeById: mergeById,
+    componentOf: componentOf,
+    componentBadges: componentBadges,
+    mapSplashItems: mapSplashItems,
+    skinData: skinData,
     cardHtml: cardHtml,
     enterTs: function () {
       return enterTs;
