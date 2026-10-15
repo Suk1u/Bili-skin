@@ -1,0 +1,16 @@
+#!name=B站装扮工作室 · gRPC 扩展（可选）
+#!desc=可选扩展。让「评论装扮 / 头像挂件 / 动态卡片」在走 gRPC 的那条路径上也生效（bilibili.vas.garb.service）。装上后 Surge 会解密 grpc.biliapi.net 的流量——如果 App 的评论/动态出现异常，把这个模块关掉即可，主模块不受影响。
+#!author=海鸥 (Surge)
+#!category=哔哩哔哩
+#!icon=paintbrush
+#!system=ios
+#!requirement=CORE_VERSION>=20
+
+[Script]
+# gRPC 装扮服务：SailingEquipMulti / UserCardMulti。
+# binary-body-mode=true 让 body 以 Uint8Array 进出，脚本才能改 protobuf。
+# 脚本里对每条响应做白名单判断，不是装扮服务就原样放行；解析不确信也原样放行。
+BiliSkinGrpc = type=http-response,pattern=^https?:\/\/grpc\.biliapi\.net\/,requires-body=true,binary-body-mode=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+[MITM]
+hostname = %APPEND% grpc.biliapi.net

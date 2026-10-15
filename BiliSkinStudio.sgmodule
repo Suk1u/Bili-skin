@@ -23,8 +23,17 @@ BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?
 # 5. 评论装扮 / 头像挂件：把「自己的」member.user_sailing_v2.card_bg、member.user_sailing.pendant 换成装扮里的图。
 BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 6. 开屏动画：x/v2/splash/brand/list 既记候选，也把选中的开屏图插进 list/show。
+# 6. 开屏动画：x/v2/splash/brand/list 既记候选，也把选中的开屏图插进 list/show；
+#    x/v2/splash/event/list2 同理（活动开屏，元素图字段 + md5）。
 BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 7. Chronos 开屏包：捕获服务端发过的 {url, md5, sign}，并把响应换成选中的那一组。
+#    包体有 RSA 签名（服务端私钥），伪造不了，所以这里只做「回放」。
+BiliSkinChronos = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/chronos\/,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 8. 空间装扮 / 数字藏品空间背景：不猜结构，按字段名把命中的组件图换掉
+#    （space_bg 的 image1..7_portrait、thumbup 的 image_ani、play_icon 的 *_png、挂件的 image_enhance）。
+BiliSkinSpace = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/space,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 [MITM]
 hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com

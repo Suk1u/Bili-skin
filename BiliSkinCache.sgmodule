@@ -1,0 +1,15 @@
+#!name=B站装扮工作室 · 包体缓存（可选）
+#!desc=可选扩展。把 Chronos 开屏包在本地存一份，CDN 撤包后仍能回放。需要 MITM B站的 CDN 主机（*.hdslb.com / *.bilivideo.com）。不装不影响主模块。
+#!author=海鸥 (Surge)
+#!category=哔哩哔哩
+#!icon=paintbrush
+#!system=ios
+#!requirement=CORE_VERSION>=20
+
+[Script]
+# Chronos 开屏包（*.cron）：本地存过同一份就直接吐本地字节，不再出网。
+# binary-body-mode=true 才能把二进制原样写回。
+BiliSkinCache = type=http-response,pattern=^https?:\/\/[a-z0-9.-]*(?:hdslb|bilivideo|bilibili)\.(?:com|net)\/[^?]*\.cron,requires-body=true,binary-body-mode=true,max-size=4194304,timeout=30,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+[MITM]
+hostname = %APPEND% *.hdslb.com, *.bilivideo.com, *.bilivideo.net

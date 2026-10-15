@@ -2,8 +2,12 @@
 
 一个 Surge 模块，让哔哩哔哩 App 用上**任意装扮**——包括付费的，也包括已下架的（后者有前提，见「已知限制」）。
 
-一套装扮（套装）不只有主题皮肤，还可能有**加载动画 / 动态卡片 / 评论装扮 / 点赞特效 / 进度条 / 空间海报 / 表情包**。
-本模块会整套抓下来，按组件类型分别注入到对应接口（能注入的注入，注入不了的至少能看）。
+一套装扮（套装）不只有主题皮肤，还可能有**加载动画 / 动态卡片 / 评论装扮 / 头像挂件 / 点赞特效 / 进度条 / 空间海报 / 表情包**。
+本模块会整套抓下来，按组件类型分别注入到对应接口（除表情包外都能生效）。
+
+面板还带：**详情页**（大图 + 组件清单 + 来源价格）、**分类筛选 / 排序 / ID 直输**、
+**藏馆按账号分组**、**开屏（品牌 / 活动 / Chronos）**、**收藏集开售提醒**、
+**配置导出导入**（换设备）、**设置 / 诊断**、中英文切换。
 
 > 各类型的**获取来源 / 数据接口 / 注入位置**逐条说明见
 > [`docs/装扮资源-来源接口注入.md`](docs/装扮资源-来源接口注入.md)。
@@ -17,6 +21,17 @@ https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinStudio.sgmodule
 ```
 
 安装后确认 `app.bilibili.com` 和 `www.bilibili.com` 已在 MITM 主机名列表里（模块会自动追加）。
+
+**可选扩展**（两个，按需装）：
+
+```
+https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinGrpc.sgmodule    # gRPC 装扮服务
+https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinCache.sgmodule   # Chronos 包体本地缓存
+```
+
+`BiliSkinGrpc` 会额外 MITM `grpc.biliapi.net`（解密该主机全部 gRPC 流量）；
+`BiliSkinCache` 会额外 MITM B站 CDN（`*.hdslb.com` / `*.bilivideo.com`）。
+两个都不装也完全不影响主模块；装了之后 App 出现异常就关掉。
 
 ## 使用
 
@@ -87,7 +102,11 @@ App 拿到它就去下载那个 ZIP（里面是 `head_bg.jpg`、`tail_icon_*.png
 | 生效·主题 | 拦截 `x/resource/show/skin`，用存好的配置替换 `user_equip` |
 | 生效·加载动画 | 同一条 `x/resource/show/skin` 响应，替换 `load_equip` |
 | 生效·评论装扮 / 挂件 | 拦截评论 / 动态响应，替换**自己**的 `member.user_sailing_v2.card_bg`、`member.user_sailing.pendant` |
-| 生效·开屏动画 | 拦截 `x/v2/splash/brand/list`，把选中的开屏图插进 `list` / `show` |
+| 生效·开屏动画 | 拦截 `x/v2/splash/brand/list` 与 `x/v2/splash/event/list2`，把选中的开屏图插进 `list` / `show` 或元素图字段（活动开屏带 md5 校验，模块会先算好） |
+| 生效·Chronos 开屏 | 拦截 `x/chronos/package/obtain`，把响应换成捕获过的 `{url, md5, sign}`（包体有 RSA 签名，只能回放） |
+| 生效·空间海报 / 点赞 / 进度条 | 拦截空间响应，**按字段名**把 `image1..7_portrait`、`image_ani`、`static_icon_image` 等换成装扮里的图 |
+| 设置 / 诊断 / 导出导入 | 桥的 `prefs` `diag` `export` `import` `equips/*` `reminders/*` 路由，全部走假响应不出网 |
+| 生效·gRPC（可选） | 装了 `BiliSkinGrpc.sgmodule` 后，改 `grpc.biliapi.net` 上 `bilibili.vas.garb.service` 的 protobuf，只改自己那条 |
 | 通信 | H5 与 Surge 通过 `app.bilibili.com/x/surge-skin/*` 对话——Surge 直接返回假响应，请求不出网 |
 
 ## 已知限制
@@ -106,9 +125,12 @@ App 拿到它就去下载那个 ZIP（里面是 `head_bg.jpg`、`tail_icon_*.png
 
 **已下架的装扮大部分用不了。** B站服务端已经不再下发下架装扮的图片包——抽样测试 60 个非在售 ID，没有一个能取到 `package_url`。没有图片包就无法渲染。模块带「藏馆」兜底：每次成功应用过的装扮会自动存进本地，之后即使下架也能继续用。
 
-**能注入的 / 不能注入的。** 主题、加载动画、评论装扮、头像挂件、开屏动画都能改。
-但**点赞特效、播放器进度条、空间海报、表情包**由服务端装备态或 gRPC（`bilibili.vas.garb.service`）
-下发，纯客户端改写做不到——这几类模块会**抓到并展示**（卡片带角标），但不保证生效。
+**能注入的 / 不能注入的。** 主题、加载动画、评论装扮、头像挂件、品牌开屏、活动开屏都能改；
+Chronos 开屏只能**回放**（包体有 RSA 签名，伪造不了）；
+装了可选的 `BiliSkinGrpc.sgmodule` 后，走 gRPC 的那条路径也能改。
+但**点赞特效、播放器进度条、空间海报**的注入点还没找到（数据都抓到了，卡片带角标），
+**表情包**要服务端确认「拥有」才能发，才是真不可行。
+下一步能加什么见 [`docs/可加功能清单.md`](docs/可加功能清单.md)。
 
 **只改客户端渲染的部分。** 别人看你的主页 / 评论时看到的仍是账号原装扮；改动只在你自己的设备上生效。
 
@@ -129,10 +151,14 @@ npm run build:bili -- --check      # 校验模块与远端脚本是否对齐
 | `src/bili_h5.js` | 注入到 B站 H5 页面的脚本（按钮、候选收集、选择面板） |
 | `src/bili_skin.src.js` | Surge 侧脚本模板，含 `__H5_PAYLOAD__` 占位符 |
 | `bili_skin.js` | **构建产物**，Surge 实际下载的文件，由上面两个生成 |
+| `BiliSkinStudio.sgmodule` | 主模块（8 条 `[Script]`） |
+| `BiliSkinGrpc.sgmodule` | 可选：gRPC 扩展（额外 MITM `grpc.biliapi.net`） |
+| `BiliSkinCache.sgmodule` | 可选：Chronos 包体本地缓存（额外 MITM B站 CDN） |
 | `docs/装扮资源-来源接口注入.md` | 各装扮类型的来源 / 接口 / 注入位置逐条说明 |
+| `docs/可加功能清单.md` | 功能清单与状态（含已判定不可行的项） |
 | `scripts/build-bili.js` | 构建脚本 |
-| `scripts/test-bili-skin.js` | Surge 侧 59 个 mock 场景 |
-| `scripts/test-bili-h5.js` | H5 纯逻辑 57 个场景 |
+| `scripts/test-bili-skin.js` | Surge 侧 94 个 mock 场景 |
+| `scripts/test-bili-h5.js` | H5 纯逻辑 64 个场景 |
 
 `bili_skin.js` 是产物但**必须入库**——Surge 要从这个 URL 下载它。改完 `src/` 后记得重新构建并推送。
 

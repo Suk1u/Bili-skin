@@ -54,6 +54,123 @@
     emoji_package: '表情包'
   };
 
+  /* 面板文案。加语言就在这里加一份。 */
+  var LANGS = {
+    zh: {
+      apply: '应用装扮',
+      scanning: '扫描中…',
+      applying: '注入中…',
+      applied: '已应用',
+      pick: '选择要应用的装扮',
+      pickSub: '本页找到 {n} 套，点「应用」生效',
+      detail: '装扮详情',
+      components: '组件',
+      source: '来源',
+      price: '价格',
+      free: '免费',
+      browse: '浏览全部装扮',
+      clear: '清除注入',
+      search: '搜索装扮名，例如「灵魂潮汐」',
+      all: '全部装扮',
+      allSub: '搜名字，或往下翻看全部',
+      category: '分类',
+      sort: '排序',
+      sortNew: '最新',
+      sortHot: '最热',
+      byId: '按 ID 找',
+      idPlaceholder: '输入装扮 ID',
+      go: '查找',
+      loading: '加载中…',
+      noMore: '没有更多了',
+      empty: '本页没找到可用的装扮。\n点「浏览全部装扮」按名字或 ID 找。',
+      emptyCard: '收藏集页面本身不带装扮数据。\n点「浏览全部装扮」按名字找，\n或进收藏集的「主题套装」页再点按钮。',
+      gallery: '藏馆 · 之前应用过的',
+      settings: '设置',
+      export: '导出配置',
+      import: '导入配置',
+      copyHint: '复制下面这段，换设备时粘到「导入配置」里',
+      importHint: '把之前导出的内容粘进来',
+      doImport: '导入',
+      copied: '已复制',
+      diag: '诊断',
+      saved: '已保存',
+      remind: '开售提醒',
+      remindAdded: '已加提醒',
+      removed: '已移除',
+      account: '账号',
+      note: '备注',
+      noteHint: '给这套装扮起个名字'
+    },
+    en: {
+      apply: 'Apply skin',
+      scanning: 'Scanning…',
+      applying: 'Injecting…',
+      applied: 'Applied',
+      pick: 'Pick a skin',
+      pickSub: '{n} found on this page — tap Apply',
+      detail: 'Skin detail',
+      components: 'Components',
+      source: 'Source',
+      price: 'Price',
+      free: 'Free',
+      browse: 'Browse all',
+      clear: 'Clear injection',
+      search: 'Search by name, e.g. "灵魂潮汐"',
+      all: 'All skins',
+      allSub: 'Search or scroll',
+      category: 'Category',
+      sort: 'Sort',
+      sortNew: 'Newest',
+      sortHot: 'Hottest',
+      byId: 'By ID',
+      idPlaceholder: 'Enter skin ID',
+      go: 'Go',
+      loading: 'Loading…',
+      noMore: 'No more',
+      empty: 'No skin found on this page.\nTap "Browse all" to search by name or ID.',
+      emptyCard: 'Collection pages carry no skin data.\nTap "Browse all",\nor open the collection\'s theme-suit page.',
+      gallery: 'Vault · previously applied',
+      settings: 'Settings',
+      export: 'Export',
+      import: 'Import',
+      copyHint: 'Copy this; paste into Import on another device',
+      importHint: 'Paste exported content here',
+      doImport: 'Import',
+      copied: 'Copied',
+      diag: 'Diagnostics',
+      saved: 'Saved',
+      remind: 'Remind me',
+      remindAdded: 'Reminder added',
+      removed: 'Removed',
+      account: 'Account',
+      note: 'Note',
+      noteHint: 'Name this skin'
+    }
+  };
+
+  var prefs = {
+    allMembers: false,
+    notify: true,
+    autoScan: false,
+    lang: 'zh',
+    splashKeepVideo: false,
+    splashScratch: -1,
+    grpcAll: false
+  };
+
+  function t(key, vars) {
+    var L = LANGS[prefs.lang] || LANGS.zh;
+    var s = L[key] || (LANGS.zh[key] || key);
+    if (vars) {
+      for (var k in vars) {
+        if (Object.prototype.hasOwnProperty.call(vars, k)) {
+          s = s.split('{' + k + '}').join(String(vars[k]));
+        }
+      }
+    }
+    return s;
+  }
+
   /* 本页进入时间：用来过滤 Surge 嗅探到的候选，只留当前页面的。
      注入点选在 </head>，所以这个时间早于 SPA 发起请求。 */
   var enterTs = Date.now();
@@ -135,6 +252,65 @@
   function bridgeSplashSet(sp) {
     return bpost('splash/set', sp);
   }
+  function bridgeChronosList() {
+    return bget('chronos/list');
+  }
+  function bridgeChronosSet(ch) {
+    return bpost('chronos/set', ch);
+  }
+  function bridgePrefs() {
+    return bget('prefs');
+  }
+  function bridgePrefsSet(obj) {
+    return bpost('prefs/set', obj);
+  }
+  function bridgeExport() {
+    return bget('export');
+  }
+  function bridgeImport(obj) {
+    return bpost('import', obj);
+  }
+  function bridgeDiag() {
+    return bget('diag');
+  }
+  function bridgeEquips() {
+    return bget('equips');
+  }
+  function bridgeEquipUse(mid) {
+    return bget('equips/use?mid=' + encodeURIComponent(mid));
+  }
+  function bridgeEquipRemove(mid) {
+    return bget('equips/remove?mid=' + encodeURIComponent(mid));
+  }
+  function bridgeReminders() {
+    return bget('reminders');
+  }
+  function bridgeReminderAdd(r) {
+    return bpost('reminders/add', r);
+  }
+
+  /* 拉一次设置，失败就用默认值 */
+  async function loadPrefs() {
+    try {
+      var r = await bridgePrefs();
+      if (r && r.data && typeof r.data === 'object') {
+        for (var k in r.data) {
+          if (Object.prototype.hasOwnProperty.call(r.data, k)) prefs[k] = r.data[k];
+        }
+      }
+    } catch (e) {}
+    return prefs;
+  }
+
+  async function savePrefs(patch) {
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) prefs[k] = patch[k];
+    }
+    try {
+      await bridgePrefsSet(patch);
+    } catch (e) {}
+    return prefs;
+  }
 
   /* ===================== B 站接口 ===================== */
 
@@ -172,9 +348,19 @@
       API + '/x/garb/v2/mall/home/search?key_word=' + encodeURIComponent(kw) + '&pn=1&ps=20'
     );
   }
-  /* 装扮目录分页：part_id=6 是装扮，全站约 3400 套 */
-  function apiCatalogPage(pn) {
-    return jget(API + '/x/garb/v2/mall/partition/item/list?part_id=6&pn=' + pn + '&sort_type=2');
+  /* 装扮目录分页：part_id 默认 6（装扮），sort_type 默认 2。全站约 3400 套 */
+  function apiCatalogPage(pn, partId, sortType) {
+    var p = partId || 6;
+    var s = sortType === undefined || sortType === null ? 2 : sortType;
+    return jget(
+      API +
+        '/x/garb/v2/mall/partition/item/list?part_id=' +
+        p +
+        '&pn=' +
+        pn +
+        '&sort_type=' +
+        s
+    );
   }
   /* 当前登录用户 mid（用于 Surge 侧只改自己的评论装扮） */
   function apiNav() {
@@ -403,6 +589,7 @@
 
   /* 一套装扮带了哪些组件（用于卡片角标） */
   function componentBadges(it) {
+    if (it && it.isChronos) return ['Chronos 开屏'];
     if (it && it.isSplash) return ['开屏动画'];
     var c = it && it.components;
     if (!c) return [];
@@ -415,19 +602,51 @@
     return out;
   }
 
-  /* Surge 侧嗅探到的开屏图 -> 候选卡片。thumb 是图片地址。 */
+  /* Surge 侧捕获到的 Chronos 包 -> 候选卡片。
+     注意：包体有 RSA 签名，只能回放服务端发过的，不能凭空造。 */
+  function mapChronosItems(list) {
+    var out = [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i] || {};
+      if (!it.url || !it.sign) continue;
+      out.push({
+        id: 'ch' + (it.id || i),
+        name: 'Chronos 开屏' + (it.service_key ? ' · ' + it.service_key : '') + ' #' + (i + 1),
+        preview: '',
+        isChronos: true,
+        chronos: {
+          id: it.id,
+          service_key: it.service_key || '',
+          url: it.url,
+          md5: it.md5 || '',
+          sign: it.sign
+        }
+      });
+    }
+    return out;
+  }
+
+  /* Surge 侧嗅探到的开屏 -> 候选卡片。brand=品牌开屏，event=活动开屏。 */
   function mapSplashItems(list) {
     var out = [];
     if (!Array.isArray(list)) return out;
     for (var i = 0; i < list.length; i++) {
       var it = list[i] || {};
       if (!it.thumb) continue;
+      var kind = it.kind === 'event' ? 'event' : 'brand';
       out.push({
-        id: 'sp' + (it.id || i),
-        name: '开屏动画 #' + (it.id || i + 1),
+        id: 'sp' + kind + (it.id || i),
+        name: (kind === 'event' ? '活动开屏' : '开屏动画') + ' #' + (it.id || i + 1),
         preview: it.thumb,
         isSplash: true,
-        splash: { id: it.id, thumb: it.thumb, logo_url: it.logo_url || '', duration: 3000 }
+        splash: {
+          kind: kind,
+          id: it.id,
+          thumb: it.thumb,
+          logo_url: it.logo_url || '',
+          duration: 3000
+        }
       });
     }
     return out;
@@ -439,12 +658,16 @@
   function mapSuit(it) {
     it = it || {};
     var p = it.properties || {};
+    var price = Number(p.sale_bp_forever_raw || 0) || 0;
     return {
       id: it.item_id,
       name: it.name,
       cover: p.image_cover || '',
+      preview: p.image_cover || p.image_preview || '',
       cat: it.group_name || '',
-      paid: Number(p.sale_bp_forever_raw || 0) > 0
+      paid: price > 0,
+      salePrice: price,
+      owner_uid: p.owner_uid || ''
     };
   }
 
@@ -494,7 +717,22 @@
     for (var i = 0; i < hits.length; i++) {
       var h = hits[i];
       lines.push(
-        '· ' + h.name + (h.upcoming && h.startAt ? '\n    ' + fmtTime(h.startAt) + ' 开售' : '')
+        '· ' +
+          h.name +
+          (h.upcoming && h.startAt ? '\n    ' + fmtTime(h.startAt) + ' 开售' : '') +
+          (h.upcoming
+            ? '\n    <span data-remind="' +
+              esc(h.id || h.name) +
+              '" data-remind-name="' +
+              esc(h.name) +
+              '" data-remind-at="' +
+              (h.startAt || 0) +
+              '" style="color:' +
+              PINK +
+              '">' +
+              esc(t('remind')) +
+              '</span>'
+            : '')
       );
     }
     return emptyHtml(
@@ -563,12 +801,19 @@
       } catch (err) {}
     }
 
-    /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list */
+    /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list 与 event/list2 */
     try {
       var sr = await bridgeSplashList();
       var splashItems = mapSplashItems(sr && sr.data);
       for (var s = 0; s < splashItems.length; s++) merged.push(splashItems[s]);
     } catch (err2) {}
+
+    /* Chronos 开屏包候选：Surge 侧捕获的 {url,md5,sign}（只能回放，不能造） */
+    try {
+      var cr = await bridgeChronosList();
+      var chItems = mapChronosItems(cr && cr.data);
+      for (var c2 = 0; c2 < chItems.length; c2++) merged.push(chItems[c2]);
+    } catch (err3) {}
 
     return merged;
   }
@@ -586,6 +831,12 @@
   /* ===================== 应用 ===================== */
 
   async function applyEquip(equip) {
+    /* Chronos 开屏包走单独的存储（回放服务端发过的三件套） */
+    if (equip && equip.isChronos) {
+      var cr = await bridgeChronosSet(equip.chronos);
+      if (!cr || cr.code !== 0) throw new Error((cr && cr.msg) || '保存失败');
+      return equip;
+    }
     /* 开屏动画走单独的存储与注入点 */
     if (equip && equip.isSplash) {
       var sr = await bridgeSplashSet(equip.splash);
@@ -642,8 +893,18 @@
           .join('') +
         '</div>'
       : '';
+    var note = it.note
+      ? '<div style="margin-top:2px;font-size:11px;color:#9499a0;overflow:hidden;' +
+        'text-overflow:ellipsis;white-space:nowrap">' +
+        esc(it.note) +
+        '</div>'
+      : '';
     return (
-      '<div data-id="' + it.id + '" style="background:#fff;border-radius:12px;overflow:hidden;' +
+      '<div data-id="' +
+      it.id +
+      '" data-name="' +
+      esc(it.name || '') +
+      '" data-detail="1" style="background:#fff;border-radius:12px;overflow:hidden;' +
       'box-shadow:0 1px 6px rgba(0,0,0,.07);cursor:pointer">' +
       '<div style="position:relative;width:100%;aspect-ratio:1/1;background:#f4f4f5;overflow:hidden">' +
       (it.preview
@@ -656,11 +917,71 @@
       '<div style="font-size:13px;line-height:1.35;color:#18191c;overflow:hidden;' +
       'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:35px">' +
       esc(it.name) + '</div>' +
+      note +
       '<div data-apply="' + it.id + '" style="margin-top:8px;height:30px;line-height:30px;' +
       'text-align:center;border-radius:15px;background:' + PINK + ';color:#fff;font-size:12px">' +
-      '应用</div>' +
+      t('apply') +
+      '</div>' +
       '</div></div>'
     );
+  }
+
+  /* 装扮详情：大图 + 组件清单 + 来源 / 价格。没有预览图时退化成纯文字。 */
+  function detailHtml(it) {
+    var rows = [];
+    if (it.components) {
+      for (var i = 0; i < COMPONENTS.length; i++) {
+        var k = COMPONENTS[i];
+        var c = it.components[k];
+        if (!c) continue;
+        rows.push(
+          '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f4f4f5">' +
+            '<div style="flex:none;width:84px;font-size:12px;color:#61666d">' +
+            esc(COMPONENT_LABEL[k] || k) +
+            '</div>' +
+            '<div style="flex:1;min-width:0;font-size:12px;color:#18191c;word-break:break-all">' +
+            esc(c.name || c.id || '-') +
+            '</div></div>'
+        );
+      }
+    }
+    var meta = [];
+    if (it.owner_uid) meta.push('UP ' + it.owner_uid);
+    if (it.salePrice) meta.push(t('price') + ' ' + it.salePrice);
+    else if (it.paid === false) meta.push(t('free'));
+
+    return (
+      (it.preview
+        ? '<div style="width:100%;aspect-ratio:1/1;background:#f4f4f5;border-radius:12px;' +
+          'overflow:hidden;margin-bottom:12px"><img src="' + esc(it.preview) + '" ' +
+          'style="display:block;width:100%;height:100%;object-fit:cover"></div>'
+        : '') +
+      (rows.length
+        ? '<div style="margin-bottom:10px">' +
+          '<div style="font-size:13px;color:#61666d;margin-bottom:2px">' + t('components') + '</div>' +
+          rows.join('') +
+          '</div>'
+        : '') +
+      (meta.length
+        ? '<div style="font-size:12px;color:#9499a0">' + esc(meta.join(' · ')) + '</div>'
+        : '')
+    );
+  }
+
+  function openDetail(it) {
+    openSheet(it.name || t('detail'), t('detail'), [], detailHtml(it));
+    var body = panel.querySelector('#bss-body');
+    var btn = mk(
+      'div',
+      'margin-top:16px;height:38px;line-height:38px;text-align:center;border-radius:19px;' +
+        'background:' + PINK + ';color:#fff;font-size:14px',
+      t('apply')
+    );
+    btn.addEventListener('click', function () {
+      closePanel();
+      doApply(it);
+    });
+    body.appendChild(btn);
   }
 
   /* ===================== 面板 ===================== */
@@ -742,7 +1063,7 @@
   /* 选中列表：1 个直接应用，多个弹选择 */
   async function runApply() {
     if (!launcher) return;
-    launcher.textContent = '扫描中…';
+    launcher.textContent = t('scanning');
     launcher.style.opacity = '.7';
 
     var list;
@@ -752,23 +1073,44 @@
       list = [];
     }
 
-    launcher.textContent = '应用装扮';
+    launcher.textContent = t('apply');
     launcher.style.opacity = '1';
 
     if (list.length === 0) return showEmpty();
     if (list.length === 1) return doApply(list[0]);
 
-    openSheet('选择要应用的装扮', '本页找到 ' + list.length + ' 套，点「应用」生效', [], gridHtml(list));
+    openSheet(
+      t('pick'),
+      t('pickSub', { n: list.length }),
+      [],
+      gridHtml(list)
+    );
     bindGridActions(panel.querySelector('#bss-body'), list);
+  }
+
+  /* 自动扫描：设置里开了之后，进页面若有唯一候选就直接注入，不打扰。 */
+  var autoScanned = '';
+  async function autoScanOnce() {
+    if (!prefs.autoScan) return;
+    var key = location.pathname + location.search;
+    if (key === autoScanned) return;
+    autoScanned = key;
+    var list;
+    try {
+      list = await collectCandidates();
+    } catch (e) {
+      return;
+    }
+    if (list.length === 1) doApply(list[0]);
   }
 
   function bindGridActions(root, list) {
     if (!root) return;
     root.addEventListener('click', function (e) {
       var ap = e.target.closest && e.target.closest('[data-apply]');
-      var card = ap || (e.target.closest && e.target.closest('[data-id]'));
+      var card = e.target.closest && e.target.closest('[data-id]');
       if (!card) return;
-      var id = card.getAttribute('data-apply') || card.getAttribute('data-id');
+      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');
       var hit = null;
       for (var i = 0; i < list.length; i++) {
         if (String(list[i].id) === String(id)) {
@@ -776,18 +1118,27 @@
           break;
         }
       }
-      if (hit) {
+      if (!hit) return;
+      /* 点「应用」直接注入；点卡片看详情 */
+      if (ap) {
         closePanel();
         doApply(hit);
+        return;
       }
+      if (card.getAttribute('data-detail')) {
+        openDetail(hit);
+        return;
+      }
+      closePanel();
+      doApply(hit);
     });
   }
 
   async function doApply(equip) {
-    if (launcher) launcher.textContent = '注入中…';
+    if (launcher) launcher.textContent = t('applying');
     try {
       await applyEquip(equip);
-      if (launcher) launcher.textContent = '已应用';
+      if (launcher) launcher.textContent = t('applied');
       var extra = componentBadges(equip);
       toast(
         '已注入「' + equip.name + '」' +
@@ -799,14 +1150,16 @@
       toast('失败：' + e.message);
     }
     setTimeout(function () {
-      if (launcher) launcher.textContent = '应用装扮';
+      if (launcher) launcher.textContent = t('apply');
     }, 2600);
   }
 
-  /* 本页没找到：给「浏览全部」兜底 + 藏馆里之前用过的 */
+  /* 本页没找到：给「浏览全部」兜底 + 藏馆里之前用过的 + 设置入口 */
   async function showEmpty() {
     var cur = null;
     var gal = [];
+    var equips = {};
+    var rems = [];
     try {
       var g = await bridgeGet();
       cur = g && g.data;
@@ -815,29 +1168,67 @@
       var r = await bridgeGallery();
       gal = (r && r.data) || [];
     } catch (e) {}
+    try {
+      var eq = await bridgeEquips();
+      equips = (eq && eq.data) || {};
+    } catch (e) {}
+    try {
+      var rm = await bridgeReminders();
+      rems = (rm && rm.data) || [];
+    } catch (e) {}
 
-    var acts = [{ key: 'browse', label: '浏览全部装扮', pink: true }];
-    if (cur && cur.name) acts.push({ key: 'clear', label: '清除注入' });
+    var acts = [
+      { key: 'browse', label: t('browse'), pink: true },
+      { key: 'settings', label: t('settings') }
+    ];
+    if (cur && cur.name) acts.push({ key: 'clear', label: t('clear') });
 
     var isCard = /digital-card/.test(location.pathname || '');
-    var tip = isCard
-      ? '收藏集页面本身不带装扮数据。\n点「浏览全部装扮」按名字找，\n或进收藏集的「主题套装」页再点按钮。'
-      : '本页没找到可用的装扮。\n点「浏览全部装扮」按名字或 ID 找。';
+    var tip = isCard ? t('emptyCard') : t('empty');
 
-    var body =
-      emptyHtml(tip) +
-      (gal.length
-        ? '<div style="margin:2px 0 10px;font-size:13px;color:#61666d">藏馆 · 之前应用过的</div>' +
-          gridHtml(gal)
-        : '');
+    var galList = groupGallery(gal, equips);
 
-    openSheet('应用装扮', cur && cur.name ? '当前：' + cur.name : '', acts, body);
-    bindGridActions(panel.querySelector('#bss-body'), gal);
+    var body = emptyHtml(tip);
+
+    if (rems.length) {
+      body +=
+        '<div style="margin:2px 0 10px;font-size:13px;color:#61666d">' +
+        esc(t('remind')) +
+        '</div>' +
+        rems
+          .map(function (x) {
+            return (
+              '<div style="padding:8px 0;font-size:13px;color:#18191c">' +
+              esc(x.name) +
+              (x.startAt ? ' · ' + esc(fmtTime(x.startAt)) : '') +
+              '</div>'
+            );
+          })
+          .join('');
+    }
+
+    if (galList.length) {
+      body +=
+        '<div style="margin:2px 0 10px;font-size:13px;color:#61666d">' +
+        esc(t('gallery')) +
+        '</div>' +
+        gridHtml(galList);
+    }
+
+    openSheet(t('apply'), cur && cur.name ? '当前：' + cur.name : '', acts, body);
+    bindGridActions(panel.querySelector('#bss-body'), galList);
 
     var browseBtn = panel.querySelector('[data-act="browse"]');
     if (browseBtn) {
       browseBtn.addEventListener('click', function () {
         openBrowse();
+      });
+    }
+
+    var setBtn = panel.querySelector('[data-act="settings"]');
+    if (setBtn) {
+      setBtn.addEventListener('click', function () {
+        openSettings();
       });
     }
 
@@ -852,15 +1243,19 @@
   }
 
   /* 兜底：全站装扮目录（约 3400 套）。
-     搜索走服务端接口，浏览走分页 + 触底加载。 */
+     搜索走服务端；分类用已加载条目的 group_name 做前端筛选；
+     排序走 sort_type；还能直接输 ID。 */
   async function openBrowse() {
     openSheet(
-      '全部装扮',
-      '搜名字，或往下翻看全部',
-      [],
-      '<input id="bss-q" placeholder="搜索装扮名，例如「灵魂潮汐」" ' +
+      t('all'),
+      t('allSub'),
+      [{ key: 'byid', label: t('byId') }],
+      '<input id="bss-q" placeholder="' + esc(t('search')) + '" ' +
         'style="width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +
         'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none">' +
+        '<div id="bss-tools" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;' +
+        'align-items:center;font-size:12px"></div>' +
+        '<div id="bss-cats" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px"></div>' +
         '<div id="bss-grid" style="margin-top:12px"></div>' +
         '<div id="bss-more" style="padding:18px 0;text-align:center;font-size:12px;' +
         'color:#9499a0"></div>'
@@ -868,25 +1263,128 @@
 
     var body = panel.querySelector('#bss-body');
     var qEl = body.querySelector('#bss-q');
+    var toolsEl = body.querySelector('#bss-tools');
+    var catsEl = body.querySelector('#bss-cats');
     var gridEl = body.querySelector('#bss-grid');
     var moreEl = body.querySelector('#bss-more');
 
-    var st = { pn: 0, done: false, loading: false, kw: '', timer: 0 };
+    var st = {
+      pn: 0,
+      done: false,
+      loading: false,
+      kw: '',
+      timer: 0,
+      sort: 2,
+      cat: '',
+      all: [],
+      shown: []
+    };
+
+    function chip(label, active, onTap) {
+      var el = mk(
+        'span',
+        'padding:3px 10px;border-radius:12px;cursor:pointer;' +
+          'background:' + (active ? PINK : '#f4f4f5') + ';' +
+          'color:' + (active ? '#fff' : '#61666d'),
+        esc(label)
+      );
+      el.addEventListener('click', onTap);
+      return el;
+    }
+
+    function renderTools() {
+      toolsEl.innerHTML = '';
+      toolsEl.appendChild(chip(t('sortNew'), st.sort === 2, function () {
+        st.sort = 2;
+        reset();
+      }));
+      toolsEl.appendChild(chip(t('sortHot'), st.sort === 1, function () {
+        st.sort = 1;
+        reset();
+      }));
+      var idWrap = mk('span', 'display:inline-flex;gap:6px;align-items:center');
+      idWrap.innerHTML =
+        '<input id="bss-id" placeholder="' + esc(t('idPlaceholder')) + '" ' +
+        'style="width:96px;height:26px;padding:0 10px;border:none;border-radius:13px;' +
+        'background:#f4f4f5;font-size:12px;outline:none">' +
+        '<span id="bss-idgo" style="color:' + PINK + ';cursor:pointer">' + esc(t('go')) + '</span>';
+      toolsEl.appendChild(idWrap);
+      var idEl = toolsEl.querySelector('#bss-id');
+      var goEl = toolsEl.querySelector('#bss-idgo');
+      goEl.addEventListener('click', function () {
+        var v = (idEl.value || '').replace(/\D/g, '');
+        if (v) {
+          closePanel();
+          applyById(v);
+        }
+      });
+    }
+
+    function renderCats() {
+      catsEl.innerHTML = '';
+      var names = [];
+      var seen = {};
+      for (var i = 0; i < st.all.length; i++) {
+        var g = st.all[i].cat;
+        if (g && !seen[g]) {
+          seen[g] = 1;
+          names.push(g);
+        }
+      }
+      if (!names.length) return;
+      catsEl.appendChild(chip('全部', !st.cat, function () {
+        st.cat = '';
+        applyFilter();
+      }));
+      for (var j = 0; j < names.length && j < 12; j++) {
+        (function (name) {
+          catsEl.appendChild(chip(name, st.cat === name, function () {
+            st.cat = name;
+            applyFilter();
+          }));
+        })(names[j]);
+      }
+    }
+
+    function applyFilter() {
+      var list = st.all;
+      if (st.cat) {
+        list = list.filter(function (x) {
+          return x.cat === st.cat;
+        });
+      }
+      st.shown = list;
+      gridEl.innerHTML = list.length ? gridHtml(list) : emptyHtml('没有匹配的装扮');
+      renderCats();
+    }
+
+    function reset() {
+      st.pn = 0;
+      st.done = false;
+      st.all = [];
+      st.cat = '';
+      gridEl.innerHTML = '';
+      moreEl.textContent = '';
+      renderTools();
+      renderCats();
+      loadMore();
+    }
 
     function loadMore() {
       if (st.loading || st.done || st.kw) return;
       st.loading = true;
-      moreEl.textContent = '加载中…';
+      moreEl.textContent = t('loading');
       var pn = st.pn + 1;
-      apiCatalogPage(pn)
+      apiCatalogPage(pn, 6, st.sort)
         .then(function (raw) {
           var list = mapCatalogPage(raw);
           if (!list.length) {
             st.done = true;
-            moreEl.textContent = '没有更多了';
+            moreEl.textContent = t('noMore');
           } else {
             st.pn = pn;
-            gridEl.insertAdjacentHTML('beforeend', gridHtml(list));
+            for (var i = 0; i < list.length; i++) st.all.push(list[i]);
+            applyFilter();
             moreEl.textContent = '';
           }
         })
@@ -900,25 +1398,26 @@
 
     function doSearch(kw) {
       if (!kw) {
-        gridEl.innerHTML = '';
-        st.pn = 0;
-        st.done = false;
-        moreEl.textContent = '';
-        return loadMore();
+        reset();
+        return;
       }
-      moreEl.textContent = '搜索中…';
+      moreEl.textContent = t('loading');
       apiSearch(kw)
         .then(function (raw) {
           var list = mapSearch(raw);
           if (list.length) {
-            gridEl.innerHTML = gridHtml(list);
+            st.all = list;
+            st.cat = '';
+            applyFilter();
+            moreEl.textContent = '';
           } else {
             var hits = mapCollectHits(raw);
             gridEl.innerHTML = hits.length
               ? collectHint(hits, kw)
               : emptyHtml('没搜到「' + kw + '」\n换个关键词试试');
+            catsEl.innerHTML = '';
+            moreEl.textContent = '';
           }
-          moreEl.textContent = '';
         })
         .catch(function (e) {
           moreEl.textContent = '搜索失败：' + e.message;
@@ -941,15 +1440,47 @@
 
     /* 目录条目只有 id / 名字 / 封面，点了再去拉装扮包 */
     gridEl.addEventListener('click', function (e) {
+      var rem = e.target.closest && e.target.closest('[data-remind]');
+      if (rem) {
+        bridgeReminderAdd({
+          id: rem.getAttribute('data-remind'),
+          name: rem.getAttribute('data-remind-name'),
+          startAt: Number(rem.getAttribute('data-remind-at')) || 0
+        }).then(function () {
+          toast(t('remindAdded'), true);
+        });
+        return;
+      }
       var ap = e.target.closest && e.target.closest('[data-apply]');
-      var card = ap || (e.target.closest && e.target.closest('[data-id]'));
+      var card = e.target.closest && e.target.closest('[data-id]');
       if (!card) return;
-      var id = card.getAttribute('data-apply') || card.getAttribute('data-id');
-      closePanel();
-      applyById(id);
+      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');
+      if (ap) {
+        closePanel();
+        applyById(id);
+        return;
+      }
+      /* 目录里只有封面，没有组件；点开就先拉详情再展示 */
+      openCatalogDetail(id, card.getAttribute('data-name') || '');
     });
 
+    renderTools();
     loadMore();
+  }
+
+  /* 目录条目点开：先拉详情，再弹详情面板 */
+  async function openCatalogDetail(id, name) {
+    toast(t('loading'));
+    var equip = null;
+    try {
+      equip = toEquip(await apiSuitDetail(id));
+    } catch (e) {}
+    if (!equip) {
+      toast('这套装扮拿不到装扮包');
+      return;
+    }
+    if (name && !equip.name) equip.name = name;
+    openDetail(equip);
   }
 
   async function applyById(id) {
@@ -961,6 +1492,181 @@
       if (launcher) launcher.textContent = '应用装扮';
       toast('失败：' + e.message);
     }
+  }
+
+  /* ===================== 设置 / 导出导入 ===================== */
+
+  /* 设置面板：开关 + 导出/导入 + 诊断 */
+  async function openSettings() {
+    var diag = null;
+    try {
+      var d = await bridgeDiag();
+      diag = d && d.data;
+    } catch (e) {}
+
+    function toggleRow(key, label) {
+      return (
+        '<div data-toggle="' + key + '" style="display:flex;align-items:center;' +
+        'justify-content:space-between;padding:12px 0;border-bottom:1px solid #f4f4f5;' +
+        'font-size:14px;color:#18191c;cursor:pointer">' +
+        '<span>' + esc(label) + '</span>' +
+        '<span style="font-size:12px;color:' + (prefs[key] ? PINK : '#9499a0') + '">' +
+        (prefs[key] ? '开' : '关') + '</span></div>'
+      );
+    }
+
+    var diagHtml = diag
+      ? '<div style="margin-top:14px;padding:12px;border-radius:10px;background:#f4f4f5;' +
+        'font-size:12px;line-height:1.9;color:#61666d;white-space:pre-line">' +
+        esc(
+          t('diag') + '\n' +
+            '当前装扮: ' + (diag.equip ? diag.equip.name + ' (#' + diag.equip.id + ')' : '无') + '\n' +
+            '组件: ' + (diag.equip && diag.equip.components.length ? diag.equip.components.join('/') : '—') + '\n' +
+            '主题/加载动画: ' + (diag.equip ? (diag.equip.hasSkin ? '有' : '无') + ' / ' + (diag.equip.hasLoading ? '有' : '无') : '—') + '\n' +
+            '我的 mid: ' + (diag.selfMid || '未知') + '\n' +
+            '本页嗅探: ' + diag.seen + ' 条\n' +
+            '藏馆: ' + diag.gallery + ' 套\n' +
+            'Chronos 候选: ' + diag.chronos
+        ) +
+        '</div>'
+      : '';
+
+    openSheet(
+      t('settings'),
+      '',
+      [{ key: 'export', label: t('export'), pink: true }, { key: 'import', label: t('import') }],
+      toggleRow('allMembers', '评论装扮改所有人（默认只改自己）') +
+        toggleRow('notify', '应用成功发系统通知') +
+        toggleRow('autoScan', '进页面自动扫描') +
+        toggleRow('grpcAll', 'gRPC 兜底：换掉所有 garb 图') +
+        '<div data-toggle="lang" style="display:flex;align-items:center;justify-content:space-between;' +
+        'padding:12px 0;border-bottom:1px solid #f4f4f5;font-size:14px;color:#18191c;cursor:pointer">' +
+        '<span>语言 / Language</span><span style="font-size:12px;color:' + PINK + '">' +
+        (prefs.lang === 'en' ? 'EN' : '中文') +
+        '</span></div>' +
+        diagHtml
+    );
+
+    var body = panel.querySelector('#bss-body');
+    body.addEventListener('click', async function (e) {
+      var row = e.target.closest && e.target.closest('[data-toggle]');
+      if (!row) return;
+      var key = row.getAttribute('data-toggle');
+      if (key === 'lang') {
+        await savePrefs({ lang: prefs.lang === 'en' ? 'zh' : 'en' });
+        openSettings();
+        return;
+      }
+      var patch = {};
+      patch[key] = !prefs[key];
+      await savePrefs(patch);
+      openSettings();
+    });
+
+    var expBtn = panel.querySelector('[data-act="export"]');
+    if (expBtn) expBtn.addEventListener('click', openExport);
+    var impBtn = panel.querySelector('[data-act="import"]');
+    if (impBtn) impBtn.addEventListener('click', openImport);
+  }
+
+  /* 导出：把整份配置吐成文本，方便换设备 */
+  async function openExport() {
+    var txt = '';
+    try {
+      var r = await bridgeExport();
+      txt = JSON.stringify(r && r.data);
+    } catch (e) {
+      txt = '导出失败：' + e.message;
+    }
+    openSheet(
+      t('export'),
+      t('copyHint'),
+      [],
+      '<textarea id="bss-exp" readonly style="width:100%;box-sizing:border-box;height:220px;' +
+        'padding:12px;border:none;border-radius:10px;background:#f4f4f5;font-size:11px;' +
+        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none">' +
+        esc(txt) +
+        '</textarea>' +
+        '<div id="bss-copy" style="margin-top:12px;height:38px;line-height:38px;text-align:center;' +
+        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px">' +
+        esc(t('copied')) +
+        '</div>'
+    );
+    var el = panel.querySelector('#bss-exp');
+    var cp = panel.querySelector('#bss-copy');
+    if (cp) {
+      cp.addEventListener('click', function () {
+        if (el) {
+          el.select();
+          try {
+            document.execCommand('copy');
+          } catch (e) {}
+        }
+        toast(t('copied'), true);
+      });
+    }
+  }
+
+  /* 导入：粘一段之前导出的内容 */
+  function openImport() {
+    openSheet(
+      t('import'),
+      t('importHint'),
+      [],
+      '<textarea id="bss-imp" placeholder="' +
+        esc(t('importHint')) +
+        '" style="width:100%;box-sizing:border-box;height:220px;padding:12px;border:none;' +
+        'border-radius:10px;background:#f4f4f5;font-size:11px;' +
+        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none"></textarea>' +
+        '<div id="bss-doimp" style="margin-top:12px;height:38px;line-height:38px;text-align:center;' +
+        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px">' +
+        esc(t('doImport')) +
+        '</div>'
+    );
+    var el = panel.querySelector('#bss-imp');
+    var btn = panel.querySelector('#bss-doimp');
+    if (btn) {
+      btn.addEventListener('click', async function () {
+        var raw = el ? el.value.trim() : '';
+        if (!raw) return;
+        var obj;
+        try {
+          obj = JSON.parse(raw);
+        } catch (e) {
+          toast('不是合法的导出内容');
+          return;
+        }
+        try {
+          var r = await bridgeImport(obj);
+          if (r && r.code === 0) {
+            toast('已导入 ' + ((r.data && r.data.sections) || 0) + ' 段配置\n杀后台重进生效', true);
+            closePanel();
+          } else {
+            toast('导入失败：' + ((r && r.msg) || '未知'));
+          }
+        } catch (e) {
+          toast('导入失败：' + e.message);
+        }
+      });
+    }
+  }
+
+  /* 藏馆按账号分组 */
+  function groupGallery(gal, equips) {
+    var map = {};
+    var mids = equips && typeof equips === 'object' ? Object.keys(equips) : [];
+    for (var i = 0; i < mids.length; i++) {
+      var mid = mids[i];
+      var e = equips[mid];
+      if (e && e.id) map[String(e.id)] = mid;
+    }
+    var out = [];
+    for (var j = 0; j < gal.length; j++) {
+      var it = gal[j];
+      it.mid = map[String(it.id)] || '';
+      out.push(it);
+    }
+    return out;
   }
 
   /* ===================== 悬浮按钮（可拖动） ===================== */
@@ -987,7 +1693,7 @@
         'box-shadow:0 4px 16px rgba(251,114,153,.45);cursor:pointer;white-space:nowrap;' +
         'user-select:none;-webkit-user-select:none;touch-action:none;' +
         '-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)',
-      '应用装扮'
+      t('apply')
     );
 
     var sx = 0, sy = 0, ox = 0, oy = 0, moved = false, dragging = false;
@@ -1079,6 +1785,7 @@
     lastPath = key;
     closePanel();
     mountLauncher();
+    setTimeout(autoScanOnce, 300);
   }
 
   ['pushState', 'replaceState'].forEach(function (m) {
@@ -1101,8 +1808,11 @@
   });
   setInterval(route, 800);
 
-  if (document.body) route();
-  else document.addEventListener('DOMContentLoaded', route);
+  /* 先把设置拉下来（语言等），再决定按钮和路由 */
+  loadPrefs().then(function () {
+    if (document.body) route();
+    else document.addEventListener('DOMContentLoaded', route);
+  });
 
   reportSelfMid();
 
@@ -1132,6 +1842,10 @@
     componentOf: componentOf,
     componentBadges: componentBadges,
     mapSplashItems: mapSplashItems,
+    mapChronosItems: mapChronosItems,
+    detailHtml: detailHtml,
+    groupGallery: groupGallery,
+    LANGS: LANGS,
     skinData: skinData,
     cardHtml: cardHtml,
     enterTs: function () {

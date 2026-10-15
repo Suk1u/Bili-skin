@@ -815,6 +815,635 @@ t('分派/reply 走评论装扮而不是嗅探', async function () {
   assert(stored(r, 'BiliSkinSeen') === undefined, '没走嗅探');
 });
 
+/* ===== 活动开屏 + md5 ===== */
+
+const EVENT_URL = 'https://app.bilibili.com/x/v2/splash/event/list2?appkey=x';
+const EVENT_RESP = {
+  code: 0,
+  data: {
+    list: [
+      {
+        id: 11,
+        front_image_url: 'https://i0.hdslb.com/front.jpg',
+        front_image_md5: 'aaa',
+        back_image_url: 'https://i0.hdslb.com/back.jpg',
+        back_image_md5: 'bbb',
+        video_url: 'https://upos/front.mp4',
+        video_hash: 'hhh',
+        stroke_color: '#66FFFFFF',
+        scratch_percent: 40
+      }
+    ]
+  }
+};
+
+t('活动开屏/记录候选（没选就不动 body）', async function () {
+  const r = await runSurge(resp(EVENT_URL, JSON.stringify(EVENT_RESP)));
+  assert(r.done, 'must call $done');
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  assert(r.result.body === undefined, 'untouched');
+  const rec = JSON.parse(stored(r, 'BiliSkinSplashList'));
+  assert(rec.length === 1, 'one candidate');
+  assert(rec[0].kind === 'event', 'kind=event');
+  assert(rec[0].thumb.indexOf('front.jpg') >= 0, 'front as thumb');
+});
+
+t('活动开屏/选中的图铺到元素上并清掉视频', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(EVENT_URL, JSON.stringify(EVENT_RESP), {
+      store: {
+        BiliSkinSplash: JSON.stringify({
+          kind: 'event',
+          id: 1,
+          thumb: 'https://i0.hdslb.com/mine.jpg',
+          md5: 'mymd5'
+        })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const el = JSON.parse(r.result.body).data.list[0];
+  assert(el.front_image_url === 'https://i0.hdslb.com/mine.jpg', 'front swapped');
+  assert(el.front_image_md5 === 'mymd5', 'front md5');
+  assert(el.back_image_url === 'https://i0.hdslb.com/mine.jpg', 'back swapped');
+  assert(el.back_image_md5 === 'mymd5', 'back md5');
+  assert(el.video_url === '', 'video cleared');
+  assert(el.stroke_color === '#66FFFFFF', 'other fields kept');
+});
+
+t('开屏/品牌选中不动活动开屏', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(EVENT_URL, JSON.stringify(EVENT_RESP), {
+      store: {
+        BiliSkinSplash: JSON.stringify({ kind: 'brand', id: 1, thumb: 'https://i0.hdslb.com/b.jpg' })
+      }
+    })
+  );
+  assert(r.result.body === undefined, 'event untouched by brand pick');
+});
+
+t('桥/splash/set 顺手把图片 md5 算出来', async function () {
+  const r = await runSurge(
+    post(
+      'splash/set',
+      { kind: 'event', id: 5, thumb: 'https://i0.hdslb.com/x.jpg' },
+      { http: [{ match: 'https://i0.hdslb.com/x.jpg', body: 'abc' }] }
+    )
+  );
+  assert(rb(r).code === 0, 'code 0');
+  const sp = JSON.parse(stored(r, 'BiliSkinSplash'));
+  assert(
+    sp.md5 === '900150983cd24fb0d6963f7d28e17f72',
+    'md5("abc") 应为 900150983cd24fb0d6963f7d28e17f72，实际 ' + sp.md5
+  );
+});
+
+t('桥/splash/set 拉不到图也不报错', async function () {
+  const r = await runSurge(
+    post('splash/set', { kind: 'brand', id: 6, thumb: 'https://i0.hdslb.com/y.jpg' })
+  );
+  assert(rb(r).code === 0, 'code 0');
+  const sp = JSON.parse(stored(r, 'BiliSkinSplash'));
+  assert(sp.id === 6 && !sp.md5, 'stored without md5');
+});
+
+/* ===== gRPC ===== */
+
+function gv(n) {
+  const o = [];
+  n = Math.floor(n);
+  while (n >= 0x80) {
+    o.push((n & 0x7f) | 0x80);
+    n = Math.floor(n / 128);
+  }
+  o.push(n);
+  return o;
+}
+function gtag(f, w) {
+  return gv(f * 8 + w);
+}
+function gld(f, bytes) {
+  return gtag(f, 2).concat(gv(bytes.length), bytes);
+}
+function gvar(f, n) {
+  return gtag(f, 0).concat(gv(n));
+}
+function gstr(s) {
+  const o = [];
+  for (let i = 0; i < s.length; i++) o.push(s.charCodeAt(i) & 0xff);
+  return o;
+}
+function gframe(msg) {
+  const n = msg.length;
+  return [0, (n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff].concat(msg);
+}
+function gCardBG(id, img) {
+  return gvar(1, id).concat(gld(3, gstr(img)));
+}
+function gSailing(pend, card) {
+  return gld(1, gCardBG(1, pend)).concat(gld(2, gCardBG(2, card)));
+}
+function gEntry(mid, val) {
+  return gvar(1, mid).concat(gld(2, val));
+}
+function gMap(entries) {
+  let m = [];
+  entries.forEach(function (e) {
+    m = m.concat(gld(1, e));
+  });
+  return m;
+}
+function u8(arr) {
+  return new Uint8Array(arr);
+}
+function bodyText(r) {
+  assert(r.result && r.result.body, 'rewrote body');
+  const arr = r.result.body;
+  let s = '';
+  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+  return s;
+}
+
+const GRPC_SAIL = 'https://grpc.biliapi.net/bilibili.vas.garb.service.BAPIVasGarbService/SailingEquipMulti';
+const GRPC_CARD = 'https://grpc.biliapi.net/bilibili.vas.garb.service.BAPIVasGarbService/UserCardMulti';
+
+function grpcCfg(url, msg, store) {
+  return {
+    type: 'http-response',
+    script: { binaryBodyMode: true },
+    request: { url: url, method: 'POST', headers: {} },
+    response: { status: 200, headers: { 'Content-Type': 'application/grpc' }, body: u8(gframe(msg)) },
+    store: store
+  };
+}
+
+t('gRPC/只改自己那条的卡片和挂件', async function () {
+  const msg = gMap([
+    gEntry(100, gSailing('https://old/p1.png', 'https://old/c1.png')),
+    gEntry(200, gSailing('https://old/p2.png', 'https://old/c2.png'))
+  ]);
+  const r = await runSurgeScript(
+    SRC,
+    grpcCfg(GRPC_SAIL, msg, {
+      BiliSkinEquip: JSON.stringify(EQUIP_FULL),
+      BiliSkinSelf: JSON.stringify({ mid: '100' })
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const text = bodyText(r);
+  assert(text.indexOf('garb/item/pend.png') >= 0, '自己的挂件换了');
+  assert(text.indexOf('garb/item/card.png') >= 0, '自己的卡片换了');
+  assert(text.indexOf('https://old/p1.png') < 0, '旧挂件没了');
+  assert(text.indexOf('https://old/c1.png') < 0, '旧卡片没了');
+  assert(text.indexOf('https://old/p2.png') >= 0, '别人的挂件没动');
+  assert(text.indexOf('https://old/c2.png') >= 0, '别人的卡片没动');
+});
+
+t('gRPC/UserCardMulti 换 card_url 与 big_card_url', async function () {
+  function gUserCard(cardUrl, bigUrl) {
+    return gvar(1, 9).concat(gld(4, gstr(cardUrl))).concat(gld(5, gstr(bigUrl)));
+  }
+  const msg = gMap([gEntry(100, gUserCard('https://old/card.png', 'https://old/big.png'))]);
+  const r = await runSurgeScript(
+    SRC,
+    grpcCfg(GRPC_CARD, msg, {
+      BiliSkinEquip: JSON.stringify(EQUIP_FULL),
+      BiliSkinSelf: JSON.stringify({ mid: '100' })
+    })
+  );
+  const text = bodyText(r);
+  assert(text.indexOf('garb/item/card.png') >= 0, 'card_url 换了');
+  assert(text.indexOf('https://old/card.png') < 0, '旧 card_url 没了');
+  assert(text.indexOf('https://old/big.png') < 0, '旧 big_card_url 没了');
+});
+
+t('gRPC/没有 selfMid -> 原样放行', async function () {
+  const msg = gMap([gEntry(100, gSailing('https://old/p1.png', 'https://old/c1.png'))]);
+  const r = await runSurgeScript(
+    SRC,
+    grpcCfg(GRPC_SAIL, msg, { BiliSkinEquip: JSON.stringify(EQUIP_FULL) })
+  );
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('gRPC/非装扮服务 -> 原样放行', async function () {
+  const msg = gMap([gEntry(100, gSailing('https://old/p1.png', 'https://old/c1.png'))]);
+  const r = await runSurgeScript(
+    SRC,
+    grpcCfg('https://grpc.biliapi.net/bilibili.app.feed.v1.Feed/Index', msg, {
+      BiliSkinEquip: JSON.stringify(EQUIP_FULL),
+      BiliSkinSelf: JSON.stringify({ mid: '100' })
+    })
+  );
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('gRPC/帧长对不上 -> 原样放行', async function () {
+  const r = await runSurgeScript(SRC, {
+    type: 'http-response',
+    script: { binaryBodyMode: true },
+    request: { url: GRPC_SAIL, method: 'POST', headers: {} },
+    response: { status: 200, headers: {}, body: u8([0, 0, 0, 0, 99, 1, 2]) },
+    store: {
+      BiliSkinEquip: JSON.stringify(EQUIP_FULL),
+      BiliSkinSelf: JSON.stringify({ mid: '100' })
+    }
+  });
+  assert(r.done, 'must call $done');
+  assert(r.result.body === undefined, 'untouched');
+});
+
+/* ===== Chronos 开屏包（捕获 + 回放） ===== */
+
+const CHRONOS_URL = 'https://app.bilibili.com/x/chronos/package/obtain?service_key=service_ad';
+const CHRONOS_RESP = {
+  code: 0,
+  data: {
+    url: 'https://queue.package.bfcchronos.bilibili.com/a.cron',
+    md5: 'm1',
+    sign: 's1'
+  }
+};
+
+t('Chronos/捕获候选（没选就不动 body）', async function () {
+  const r = await runSurge(resp(CHRONOS_URL, JSON.stringify(CHRONOS_RESP)));
+  assert(r.done, 'must call $done');
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  assert(r.result.body === undefined, 'untouched');
+  const rec = JSON.parse(stored(r, 'BiliSkinChronosList'));
+  assert(rec.length === 1, 'one candidate');
+  assert(rec[0].service_key === 'service_ad', 'service_key captured');
+  assert(rec[0].sign === 's1', 'sign captured');
+});
+
+t('Chronos/回放选中的三件套', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(CHRONOS_URL, JSON.stringify(CHRONOS_RESP), {
+      store: {
+        BiliSkinChronos: JSON.stringify({
+          service_key: 'service_ad',
+          url: 'https://queue.package.bfcchronos.bilibili.com/mine.cron',
+          md5: 'mm',
+          sign: 'ss'
+        })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(r.result.body).data;
+  assert(d.url.indexOf('mine.cron') >= 0, 'url replayed');
+  assert(d.md5 === 'mm', 'md5 replayed');
+  assert(d.sign === 'ss', 'sign replayed');
+});
+
+t('Chronos/service_key 不匹配不回放', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(CHRONOS_URL, JSON.stringify(CHRONOS_RESP), {
+      store: {
+        BiliSkinChronos: JSON.stringify({
+          service_key: 'service_special',
+          url: 'https://queue.package.bfcchronos.bilibili.com/mine.cron',
+          md5: 'mm',
+          sign: 'ss'
+        })
+      }
+    })
+  );
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('Chronos/响应没有包地址 -> 放行', async function () {
+  const r = await runSurge(resp(CHRONOS_URL, JSON.stringify({ code: 0, data: { foo: 1 } })));
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('Chronos/非 JSON -> 放行', async function () {
+  const r = await runSurge(resp(CHRONOS_URL, '<html>WAF</html>'));
+  assert(r.done, 'must call $done');
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('桥/chronos/set -> 记住', async function () {
+  const r = await runSurge(
+    post('chronos/set', {
+      service_key: 'service_ad',
+      url: 'https://queue.package.bfcchronos.bilibili.com/a.cron',
+      md5: 'm',
+      sign: 's'
+    })
+  );
+  assert(rb(r).code === 0, 'code 0');
+  assert(JSON.parse(stored(r, 'BiliSkinChronos')).sign === 's', 'stored');
+});
+
+t('桥/chronos/set 缺 sign -> 报错', async function () {
+  const r = await runSurge(
+    post('chronos/set', { url: 'https://queue.package.bfcchronos.bilibili.com/a.cron', md5: 'm' })
+  );
+  assert(rb(r).code === -1, 'code -1');
+});
+
+t('桥/chronos/list 空 -> []', async function () {
+  const r = await runSurge(req('chronos/list'));
+  assert(Array.isArray(rb(r).data), 'array');
+  assert(rb(r).data.length === 0, 'empty');
+});
+
+/* ===== 通用字段换图 + 设置 / 诊断 / 导出导入 / 多账号 / 提醒 ===== */
+
+const EQUIP_ALL = {
+  id: 67790,
+  name: '全套',
+  preview: 'https://i0.hdslb.com/cover.jpg',
+  ver: 1711761021,
+  package_url: 'https://i0.hdslb.com/bfs/garb/zip/x.zip',
+  package_md5: 'm',
+  data: { color: '#fff' },
+  components: {
+    skin: { kind: 'skin', package_url: 'https://i0.hdslb.com/bfs/garb/zip/x.zip' },
+    loading: { kind: 'loading', id: 2, loading_url: 'https://i0.hdslb.com/l.webp' },
+    card: { kind: 'card', image: 'https://i0.hdslb.com/card.png' },
+    card_bg: { kind: 'card_bg', image: 'https://i0.hdslb.com/cardbg.png' },
+    pendant: { kind: 'pendant', image: 'https://i0.hdslb.com/pend.png' },
+    thumbup: { kind: 'thumbup', image_ani: 'https://i0.hdslb.com/ani.png' },
+    play_icon: { kind: 'play_icon', static_icon_image: 'https://i0.hdslb.com/icon.png' },
+    space_bg: { kind: 'space_bg', url: 'https://i0.hdslb.com/space.png' }
+  }
+};
+
+const SPACE_URL = 'https://app.bilibili.com/x/v2/space/garb/detail?mid=1';
+const SPACE_RESP = {
+  code: 0,
+  data: {
+    garb: {
+      id: 1,
+      space_bg: { image1_portrait: 'https://i0.hdslb.com/old1.png' },
+      thumbup: { url_image_ani_cut: 'https://i0.hdslb.com/old2.png' },
+      play_icon: { static_icon_image: 'https://i0.hdslb.com/old3.png' },
+      pendant: { image_enhance: 'https://i0.hdslb.com/old4.png' }
+    }
+  }
+};
+
+t('组件字段/按字段名把 space_bg·thumbup·play_icon·挂件都换掉', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(SPACE_URL, JSON.stringify(SPACE_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(r.result.body).data.garb;
+  assert(d.space_bg.image1_portrait === 'https://i0.hdslb.com/space.png', 'space_bg 换了');
+  assert(d.thumbup.url_image_ani_cut === 'https://i0.hdslb.com/ani.png', 'thumbup 换了');
+  assert(d.play_icon.static_icon_image === 'https://i0.hdslb.com/icon.png', 'play_icon 换了');
+  assert(d.pendant.image_enhance === 'https://i0.hdslb.com/pend.png', '挂件动态形态换了');
+});
+
+t('组件字段/没有命中字段 -> 原样放行', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(SPACE_URL, JSON.stringify({ code: 0, data: { foo: 'https://i0.hdslb.com/x.png' } }), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('设置/默认值 + 改一项', async function () {
+  const r1 = await runSurge(req('prefs'));
+  const p1 = rb(r1).data;
+  assert(p1.allMembers === false && p1.lang === 'zh', '默认值');
+  const r2 = await runSurge(post('prefs/set', { allMembers: true, lang: 'en' }));
+  assert(rb(r2).data.allMembers === true, '改成功');
+  const r3 = await runSurge(req('prefs', { store: { BiliSkinPrefs: stored(r2, 'BiliSkinPrefs') } }));
+  assert(rb(r3).data.allMembers === true && rb(r3).data.lang === 'en', '持久化');
+  assert(rb(r3).data.notify === true, '没改的保留默认');
+});
+
+t('设置/allMembers 打开后别人的评论装扮也改', async function () {
+  const body = JSON.stringify({
+    code: 0,
+    data: {
+      replies: [
+        { member: { mid: 100, user_sailing_v2: { card_bg: { image: 'https://old/1.png' } } } },
+        { member: { mid: 200, user_sailing_v2: { card_bg: { image: 'https://old/2.png' } } } }
+      ]
+    }
+  });
+  const r = await runSurgeScript(
+    SRC,
+    resp(REPLY_URL, body, {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinPrefs: JSON.stringify({ allMembers: true })
+      }
+    })
+  );
+  const out = JSON.parse(r.result.body);
+  assert(out.data.replies[0].member.user_sailing_v2.card_bg.image.indexOf('cardbg') >= 0, '自己换了');
+  assert(out.data.replies[1].member.user_sailing_v2.card_bg.image.indexOf('cardbg') >= 0, '别人也换了');
+});
+
+t('诊断/返回关键状态', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    req('diag', {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinSelf: JSON.stringify({ mid: '42' })
+      }
+    })
+  );
+  const d = rb(r).data;
+  assert(d.equip && d.equip.id === 67790, 'equip');
+  assert(d.equip.hasSkin === true && d.equip.hasLoading === true, 'skin/loading 判定');
+  assert(d.equip.components.indexOf('space_bg') >= 0, 'components 列表');
+  assert(d.selfMid === '42', 'mid');
+});
+
+t('导出/导入 往返一致', async function () {
+  const r1 = await runSurgeScript(
+    SRC,
+    req('export', {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinGallery: JSON.stringify([EQUIP_ALL])
+      }
+    })
+  );
+  const dump = rb(r1).data;
+  assert(dump.v === 1 && dump.equip.id === 67790, '导出内容');
+  const r2 = await runSurge(post('import', dump));
+  assert(rb(r2).code === 0, 'code 0');
+  assert(rb(r2).data.sections >= 2, '写入段数: ' + rb(r2).data.sections);
+  assert(JSON.parse(stored(r2, 'BiliSkinEquip')).id === 67790, 'equip 落库');
+});
+
+t('导出/导入 非法数据报错', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    post('import', {}, { request: { url: BRIDGE_URL + 'import', method: 'POST', headers: {}, body: '{oops' } })
+  );
+  assert(rb(r).code === -1, 'code -1');
+});
+
+t('多账号/equips 列表 + 切换', async function () {
+  const other = Object.assign({}, EQUIP_ALL, { id: 111, name: '另一个账号的' });
+  const store = { BiliSkinEquips: JSON.stringify({ '1': EQUIP_ALL, '2': other }) };
+  const r1 = await runSurgeScript(SRC, req('equips', { store: store }));
+  assert(Object.keys(rb(r1).data).length === 2, '两个账号');
+  const r2 = await runSurgeScript(SRC, req('equips/use?mid=2', { store: store }));
+  assert(rb(r2).code === 0 && rb(r2).data.mid === '2', '切换成功');
+  assert(JSON.parse(stored(r2, 'BiliSkinEquip')).id === 111, '落库');
+});
+
+t('多账号/切不存在的报错', async function () {
+  const r = await runSurge(req('equips/use?mid=999'));
+  assert(rb(r).code === -1, 'code -1');
+});
+
+t('提醒/新增与移除', async function () {
+  const r1 = await runSurge(post('reminders/add', { id: 7, name: '灵魂潮汐', startAt: 1791891000 }));
+  assert(rb(r1).code === 0, 'code 0');
+  const r2 = await runSurge(req('reminders', { store: { BiliSkinReminders: stored(r1, 'BiliSkinReminders') } }));
+  assert(rb(r2).data.length === 1, '一条');
+  const r3 = await runSurge(req('reminders/remove?id=7', { store: { BiliSkinReminders: stored(r1, 'BiliSkinReminders') } }));
+  assert(rb(r3).data.count === 0, '移除了');
+});
+
+t('提醒/到点自动发通知并摘掉', async function () {
+  const past = { id: 1, name: '到点了', startAt: 1 };
+  const r = await runSurgeScript(
+    SRC,
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinReminders: JSON.stringify([past])
+      }
+    })
+  );
+  assert(r.notifications.length === 1, '发了一条通知');
+  assert(r.notifications[0].subtitle.indexOf('开售') >= 0, '副标题对');
+  assert(JSON.parse(stored(r, 'BiliSkinReminders')).length === 0, '摘掉了');
+});
+
+t('开屏/保留视频通道（设置里开）', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(EVENT_URL, JSON.stringify(EVENT_RESP), {
+      store: {
+        BiliSkinSplash: JSON.stringify({
+          kind: 'event',
+          thumb: 'https://i0.hdslb.com/mine.jpg',
+          md5: 'mm'
+        }),
+        BiliSkinPrefs: JSON.stringify({ splashKeepVideo: true })
+      }
+    })
+  );
+  const el = JSON.parse(r.result.body).data.list[0];
+  assert(el.front_image_url === 'https://i0.hdslb.com/mine.jpg', '图换了');
+  assert(el.video_url === 'https://upos/front.mp4', '视频保留');
+});
+
+t('开屏/刮擦比例可调', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(EVENT_URL, JSON.stringify(EVENT_RESP), {
+      store: {
+        BiliSkinSplash: JSON.stringify({
+          kind: 'event',
+          thumb: 'https://i0.hdslb.com/mine.jpg',
+          md5: 'mm'
+        }),
+        BiliSkinPrefs: JSON.stringify({ splashScratch: 75 })
+      }
+    })
+  );
+  assert(JSON.parse(r.result.body).data.list[0].scratch_percent === 75, '刮擦比例改成 75');
+});
+
+t('gRPC/兜底模式：schema 不匹配也把 garb 图换掉', async function () {
+  const msg = gMap([gEntry(100, gSailing('https://i0.hdslb.com/bfs/garb/item/old1.png', 'https://i0.hdslb.com/bfs/garb/item/old2.png'))]);
+  const r = await runSurgeScript(SRC, {
+    type: 'http-response',
+    script: { binaryBodyMode: true },
+    request: {
+      url: 'https://grpc.biliapi.net/bilibili.vas.garb.service.BAPIVasGarbService/SomeOtherCall',
+      method: 'POST',
+      headers: {}
+    },
+    response: { status: 200, headers: {}, body: u8(gframe(msg)) },
+    store: {
+      BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+      BiliSkinPrefs: JSON.stringify({ grpcAll: true })
+    }
+  });
+  const text = bodyText(r);
+  assert(text.indexOf('cardbg.png') >= 0, '换成我们的图了');
+  assert(text.indexOf('old1.png') < 0 && text.indexOf('old2.png') < 0, '旧的都没了');
+});
+
+t('gRPC/兜底模式默认关 -> 放行', async function () {
+  const msg = gMap([gEntry(100, gSailing('https://i0.hdslb.com/bfs/garb/item/old1.png', 'https://i0.hdslb.com/bfs/garb/item/old2.png'))]);
+  const r = await runSurgeScript(SRC, {
+    type: 'http-response',
+    script: { binaryBodyMode: true },
+    request: {
+      url: 'https://grpc.biliapi.net/bilibili.vas.garb.service.BAPIVasGarbService/SomeOtherCall',
+      method: 'POST',
+      headers: {}
+    },
+    response: { status: 200, headers: {}, body: u8(gframe(msg)) },
+    store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+  });
+  assert(r.result.body === undefined, 'untouched');
+});
+
+t('Chronos/包体缓存后不再出网', async function () {
+  const payload = 'PK\u0003\u0004fake-cron-package-bytes';
+  const r = await runSurgeScript(
+    SRC,
+    post('chronos/set', { service_key: 'service_ad', url: 'https://x.cdn/a.cron', md5: 'm', sign: 's' }, {
+      http: [{ match: 'https://x.cdn/a.cron', body: payload }]
+    })
+  );
+  assert(rb(r).code === 0, 'code 0');
+  assert(rb(r).data.cached === true, '缓存成功');
+  const blob = JSON.parse(stored(r, 'BiliSkinChronosBlob'));
+  assert(blob.b64 && blob.size === payload.length, 'blob 落库');
+});
+
+t('Chronos/包请求命中本地缓存直接吐字节', async function () {
+  const payload = 'PK\u0003\u0004cached';
+  const blob = { url: 'https://x.cdn/a.cron', md5: 'm', size: payload.length, b64: null };
+  // 用同一套编码逻辑先造出 b64（借脚本自身：先缓存一次）
+  const r1 = await runSurgeScript(
+    SRC,
+    post('chronos/set', { url: 'https://x.cdn/a.cron', md5: 'm', sign: 's' }, {
+      http: [{ match: 'https://x.cdn/a.cron', body: payload }]
+    })
+  );
+  const storedBlob = stored(r1, 'BiliSkinChronosBlob');
+  const r2 = await runSurgeScript(SRC, {
+    type: 'http-response',
+    script: { binaryBodyMode: true },
+    request: { url: 'https://x.cdn/a.cron?sign=s', method: 'GET', headers: {} },
+    response: { status: 200, headers: {}, body: u8([]) },
+    store: { BiliSkinChronosBlob: storedBlob }
+  });
+  const out = r2.result.body;
+  assert(out && out.length === payload.length, '长度一致: ' + (out && out.length));
+  let s = '';
+  for (let i = 0; i < out.length; i++) s += String.fromCharCode(out[i]);
+  assert(s === payload, '字节一致');
+});
+
 /* ---------- 运行 ---------- */
 
 (async function () {

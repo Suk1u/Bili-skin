@@ -700,6 +700,82 @@ t('mapSplashItems/开屏图 -> 候选卡片', function () {
   eq(API.mapSplashItems(null), [], 'null safe');
 });
 
+t('mapSplashItems/区分品牌与活动开屏', function () {
+  const out = API.mapSplashItems([
+    { kind: 'brand', id: 1, thumb: 'https://i0.hdslb.com/a.jpg' },
+    { kind: 'event', id: 2, thumb: 'https://i0.hdslb.com/b.jpg', back: 'https://i0.hdslb.com/c.jpg' }
+  ]);
+  eq(out.length, 2, '两个');
+  eq(out[0].splash.kind, 'brand', 'brand kind');
+  eq(out[1].splash.kind, 'event', 'event kind');
+  eq(out[1].name.indexOf('活动') >= 0, true, 'event 名字带「活动」');
+  eq(out[1].splash.thumb, 'https://i0.hdslb.com/b.jpg', 'thumb');
+});
+
+t('mapChronosItems/映射（缺 sign 丢弃）', function () {
+  const out = API.mapChronosItems([
+    { id: 1, service_key: 'service_ad', url: 'https://x/a.cron', md5: 'm', sign: 's' },
+    { id: 2, url: 'https://x/b.cron' }
+  ]);
+  eq(out.length, 1, '缺 sign 丢掉');
+  eq(out[0].isChronos, true, '标记');
+  eq(out[0].chronos.sign, 's', 'sign');
+  eq(out[0].name.indexOf('service_ad') >= 0, true, '名字带 service_key');
+  eq(API.mapChronosItems(null), [], 'null safe');
+});
+
+t('componentBadges/Chronos 与开屏区分', function () {
+  eq(API.componentBadges({ isChronos: true }), ['Chronos 开屏'], 'chronos');
+  eq(API.componentBadges({ isSplash: true }), ['开屏动画'], 'splash');
+});
+
+/* ===== 详情 / 分组 / i18n ===== */
+
+t('detailHtml/列出组件与来源价格', function () {
+  const e = API.equipFrom(FULL_DETAIL.data, FULL_DETAIL.data.suit_items.skin[0]);
+  e.owner_uid = '12345';
+  e.salePrice = 2500;
+  const html = API.detailHtml(e);
+  assert(html.indexOf('加载动画') >= 0, '组件名在');
+  assert(html.indexOf('空间海报') >= 0, '空间海报在');
+  assert(html.indexOf('12345') >= 0, '来源 uid 在');
+  assert(html.indexOf('2500') >= 0, '价格在');
+  eq(API.detailHtml({}), '', '空对象不炸');
+});
+
+t('groupGallery/按账号把藏馆标上 mid', function () {
+  const gal = [{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: 3, name: 'c' }];
+  const out = API.groupGallery(gal, { '9': { id: 1 }, '8': { id: 3 } });
+  eq(out.length, 3, '都保留');
+  eq(out[0].mid, '9', 'id1 -> mid9');
+  eq(out[1].mid, '', '没记录的留空');
+  eq(out[2].mid, '8', 'id3 -> mid8');
+  eq(API.groupGallery([], null).length, 0, '空安全');
+});
+
+t('i18n/中英都有主要键', function () {
+  const zh = API.LANGS.zh;
+  const en = API.LANGS.en;
+  const keys = ['apply', 'browse', 'settings', 'export', 'import', 'detail', 'remind'];
+  for (let i = 0; i < keys.length; i++) {
+    assert(zh[keys[i]], 'zh 缺 ' + keys[i]);
+    assert(en[keys[i]], 'en 缺 ' + keys[i]);
+  }
+});
+
+t('mapSuit/带价格与来源', function () {
+  const s = API.mapSuit({
+    item_id: 7,
+    name: 'x',
+    group_name: 'g',
+    properties: { image_cover: 'https://i0.hdslb.com/c.jpg', sale_bp_forever_raw: '2500', owner_uid: '99' }
+  });
+  eq(s.salePrice, 2500, '价格');
+  eq(s.paid, true, '付费');
+  eq(s.owner_uid, '99', '来源');
+  eq(s.preview, 'https://i0.hdslb.com/c.jpg', '预览图');
+});
+
 /* ===== 构建一致性 ===== */
 
 function injectInto(html) {
