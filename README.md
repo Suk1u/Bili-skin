@@ -20,18 +20,21 @@ Surge → 首页 → 模块 → 安装新模块：
 https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinStudio.sgmodule
 ```
 
-安装后确认 `app.bilibili.com` 和 `www.bilibili.com` 已在 MITM 主机名列表里（模块会自动追加）。
-
-**可选扩展**（两个，按需装）：
+安装后确认这些主机已在 MITM 主机名列表里（模块会自动追加）：
 
 ```
-https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinGrpc.sgmodule    # gRPC 装扮服务
-https://raw.githubusercontent.com/Suk1u/Bili-skin/main/BiliSkinCache.sgmodule   # Chronos 包体本地缓存
+app.bilibili.com, api.bilibili.com, www.bilibili.com,
+grpc.biliapi.net, *.hdslb.com, *.bilivideo.com, *.bilivideo.net
 ```
 
-`BiliSkinGrpc` 会额外 MITM `grpc.biliapi.net`（解密该主机全部 gRPC 流量）；
-`BiliSkinCache` 会额外 MITM B站 CDN（`*.hdslb.com` / `*.bilivideo.com`）。
-两个都不装也完全不影响主模块；装了之后 App 出现异常就关掉。
+**全部功能都在这一个模块里。** 其中两条规则代价较大，出问题可以单独删掉那一行：
+
+| 规则 | 代价 | 删掉的后果 |
+|---|---|---|
+| `BiliSkinGrpc`（第 9 条） | 让 Surge 解密 `grpc.biliapi.net` | 评论 / 动态里 gRPC 那条路径上的装扮不生效（HTTP 那条仍然生效） |
+| `BiliSkinCache`（第 10 条） | 让 Surge 解密 B站 CDN | Chronos 开屏包不再本地缓存（回放仍可用，只要 CDN 还在） |
+
+删 `BiliSkinCache` 时顺手把 MITM 里的 `*.hdslb.com, *.bilivideo.com, *.bilivideo.net` 也去掉。
 
 ## 使用
 
@@ -106,7 +109,7 @@ App 拿到它就去下载那个 ZIP（里面是 `head_bg.jpg`、`tail_icon_*.png
 | 生效·Chronos 开屏 | 拦截 `x/chronos/package/obtain`，把响应换成捕获过的 `{url, md5, sign}`（包体有 RSA 签名，只能回放） |
 | 生效·空间海报 / 点赞 / 进度条 | 拦截空间响应，**按字段名**把 `image1..7_portrait`、`image_ani`、`static_icon_image` 等换成装扮里的图 |
 | 设置 / 诊断 / 导出导入 | 桥的 `prefs` `diag` `export` `import` `equips/*` `reminders/*` 路由，全部走假响应不出网 |
-| 生效·gRPC（可选） | 装了 `BiliSkinGrpc.sgmodule` 后，改 `grpc.biliapi.net` 上 `bilibili.vas.garb.service` 的 protobuf，只改自己那条 |
+| 生效·gRPC | 改 `grpc.biliapi.net` 上 `bilibili.vas.garb.service` 的 protobuf，只改自己那条 |
 | 通信 | H5 与 Surge 通过 `app.bilibili.com/x/surge-skin/*` 对话——Surge 直接返回假响应，请求不出网 |
 
 ## 已知限制
@@ -127,7 +130,7 @@ App 拿到它就去下载那个 ZIP（里面是 `head_bg.jpg`、`tail_icon_*.png
 
 **能注入的 / 不能注入的。** 主题、加载动画、评论装扮、头像挂件、品牌开屏、活动开屏都能改；
 Chronos 开屏只能**回放**（包体有 RSA 签名，伪造不了）；
-装了可选的 `BiliSkinGrpc.sgmodule` 后，走 gRPC 的那条路径也能改。
+走 gRPC 的那条路径也一起改了。
 但**点赞特效、播放器进度条、空间海报**的注入点还没找到（数据都抓到了，卡片带角标），
 **表情包**要服务端确认「拥有」才能发，才是真不可行。
 下一步能加什么见 [`docs/可加功能清单.md`](docs/可加功能清单.md)。
@@ -151,9 +154,7 @@ npm run build:bili -- --check      # 校验模块与远端脚本是否对齐
 | `src/bili_h5.js` | 注入到 B站 H5 页面的脚本（按钮、候选收集、选择面板） |
 | `src/bili_skin.src.js` | Surge 侧脚本模板，含 `__H5_PAYLOAD__` 占位符 |
 | `bili_skin.js` | **构建产物**，Surge 实际下载的文件，由上面两个生成 |
-| `BiliSkinStudio.sgmodule` | 主模块（8 条 `[Script]`） |
-| `BiliSkinGrpc.sgmodule` | 可选：gRPC 扩展（额外 MITM `grpc.biliapi.net`） |
-| `BiliSkinCache.sgmodule` | 可选：Chronos 包体本地缓存（额外 MITM B站 CDN） |
+| `BiliSkinStudio.sgmodule` | **模块本体**（10 条 `[Script]`，全部功能都在这里） |
 | `docs/装扮资源-来源接口注入.md` | 各装扮类型的来源 / 接口 / 注入位置逐条说明 |
 | `docs/可加功能清单.md` | 功能清单与状态（含已判定不可行的项） |
 | `scripts/build-bili.js` | 构建脚本 |

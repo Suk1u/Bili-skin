@@ -1,5 +1,5 @@
 #!name=B站装扮工作室
-#!desc=让哔哩哔哩 App 用上任意装扮（含付费、含抽奖款）。用法：在 App 里打开装扮商城、详情页、收藏集或主题套装预览页，左上角会出现「应用装扮」按钮，点一下即扫描当前页面的整套装扮（个性主题 / 加载动画 / 动态卡片 / 评论装扮 / 点赞特效 / 进度条 / 空间海报 / 表情包），只有一套就直接注入，多套会弹列表让你选。然后杀掉后台重进 App 生效。按钮可拖动。注意：已下架的装扮 B站已不再下发图片包，只有之前存过才能用。
+#!desc=让哔哩哔哩 App 用上任意装扮（含付费、含抽奖、含开屏）。用法：在 App 里打开装扮商城、详情页、收藏集或主题套装预览页，左上角出现「应用装扮」，点一下即扫描当前页面的整套装扮（个性主题 / 加载动画 / 动态卡片 / 评论装扮 / 头像挂件 / 点赞特效 / 进度条 / 空间海报），单套直接注入、多套弹列表。面板还带详情页、分类筛选、ID 直输、藏馆、开屏、开售提醒、配置导出导入、设置与诊断。然后杀掉后台重进 App 生效。按钮可拖动。注意：已下架的装扮 B站已不再下发图片包，只有之前存过才能用。
 #!author=海鸥 (Surge)
 #!category=哔哩哔哩
 #!icon=paintbrush
@@ -10,7 +10,8 @@
 # 1. H5 页面与 Surge 的通信桥：接管 /x/surge-skin/*，直接返回假响应，不发网络请求。
 BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=262144,timeout=5,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 2. 应用装扮：换「个性主题」（data.user_equip）与「加载动画」（data.load_equip）。
+# 2. 应用装扮：换「个性主题」（data.user_equip）与「加载动画」（data.load_equip），
+#    并顺手把响应里其它组件字段（挂件动态形态等）按字段名换掉。
 BiliSkinApply = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin(?:\?.*)?$,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*）、收藏集的「主题套装」预览页
@@ -23,8 +24,7 @@ BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?
 # 5. 评论装扮 / 头像挂件：把「自己的」member.user_sailing_v2.card_bg、member.user_sailing.pendant 换成装扮里的图。
 BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 6. 开屏动画：x/v2/splash/brand/list 既记候选，也把选中的开屏图插进 list/show；
-#    x/v2/splash/event/list2 同理（活动开屏，元素图字段 + md5）。
+# 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）。
 BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 7. Chronos 开屏包：捕获服务端发过的 {url, md5, sign}，并把响应换成选中的那一组。
@@ -35,5 +35,14 @@ BiliSkinChronos = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.
 #    （space_bg 的 image1..7_portrait、thumbup 的 image_ani、play_icon 的 *_png、挂件的 image_enhance）。
 BiliSkinSpace = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/space,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
+# 9. gRPC 装扮服务（SailingEquipMulti / UserCardMulti）：改 protobuf 里自己的那条。
+#    binary-body-mode=true 才能改二进制。pattern 只圈 garb 相关方法，别的 gRPC 流量不碰。
+#    ⚠️ 这条会让 Surge 解密 grpc.biliapi.net。App 的评论/动态出现异常就删掉这一行。
+BiliSkinGrpc = type=http-response,pattern=^https?:\/\/grpc\.biliapi\.net\/[^?]*[Gg]arb,requires-body=true,binary-body-mode=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
+# 10. Chronos 包体本地缓存（*.cron）：本地存过同一份就直接吐本地字节，CDN 撤包后仍能回放。
+#     ⚠️ 这条会让 Surge 解密 B站的 CDN 主机。不想要就删掉这一行 + 下面 MITM 里的 CDN 通配符。
+BiliSkinCache = type=http-response,pattern=^https?:\/\/[a-z0-9.-]*(?:hdslb|bilivideo|bilibili)\.(?:com|net)\/[^?]*\.cron,requires-body=true,binary-body-mode=true,max-size=4194304,timeout=30,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+
 [MITM]
-hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com
+hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com, grpc.biliapi.net, *.hdslb.com, *.bilivideo.com, *.bilivideo.net
