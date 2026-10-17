@@ -1773,6 +1773,99 @@ t('桥/found 过滤过期条目', async function () {
   assert(rb(r).data.length === 0, '过期的不返回');
 });
 
+t('我的页/用户原本没有挂件时依然能够成功注入挂件', async function () {
+  const NO_PENDANT_RESP = {
+    code: 0,
+    data: {
+      mid: 12345,
+      pendantUrl: '',
+      card: {
+        mid: 12345,
+        pendant: { pid: 0, name: '', image: '', expire: 0, image_enhance: '', image_enhance_frame: '' }
+      }
+    }
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify(NO_PENDANT_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl === 'https://i0.hdslb.com/pend.png', 'pendantUrl 注入');
+  assert(d.card.pendant.image === 'https://i0.hdslb.com/pend.png', 'pendant.image 注入');
+  assert(d.card.pendant.pid > 0, 'pid 变为有效数字');
+});
+
+t('评论装扮/用户原本没有 user_sailing 节点时依然能够成功注入', async function () {
+  const NO_SAILING_RESP = {
+    code: 0,
+    data: {
+      replies: [
+        { member: { mid: 100 } }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(NO_SAILING_RESP), {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinSelf: JSON.stringify({ mid: '100' })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing && m.user_sailing.pendant && m.user_sailing.pendant.image.indexOf('pend.png') >= 0, '注入了 pendant');
+  assert(m.user_sailing.card_bg && m.user_sailing.card_bg.image.indexOf('cardbg.png') >= 0, '注入了 card_bg');
+});
+
+t('开屏/business show 支持收藏集或自定义开屏并同步换 hash', async function () {
+  const body = {
+    code: 0,
+    data: { id: 111, image_url: 'https://i0.hdslb.com/bfs/splash/orig.png', hash: 'orig_hash' }
+  };
+  const r = await runSurge(
+    resp('https://app.bilibili.com/x/v2/splash/show?id=1', JSON.stringify(body), {
+      store: {
+        BiliSkinSplash: JSON.stringify({
+          kind: 'collect',
+          thumb: 'https://i0.hdslb.com/bfs/splash/collect.png',
+          md5: 'new_md5_hash'
+        })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.image_url === 'https://i0.hdslb.com/bfs/splash/collect.png', '开屏图换了');
+  assert(d.hash === 'new_md5_hash', 'hash 同步更新');
+});
+
+t('主题数据/保留 head_myself_* 等「我的」主页顶栏完整字段', async function () {
+  const fullSkinProps = {
+    color_mode: 'dark',
+    color: '#111',
+    head_myself_mp4_bg: 'https://i0.hdslb.com/head_mp4.mp4',
+    head_myself_squared_bg: 'https://i0.hdslb.com/head_square.jpg',
+    tail_icon_myself: 'https://i0.hdslb.com/tail_my.png'
+  };
+  const equip = {
+    id: 100,
+    package_url: 'https://i0.hdslb.com/skin.zip',
+    data: fullSkinProps
+  };
+  const r = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(equip) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data.user_equip.data;
+  assert(d.head_myself_mp4_bg === 'https://i0.hdslb.com/head_mp4.mp4', 'head_myself_mp4_bg 保留');
+  assert(d.head_myself_squared_bg === 'https://i0.hdslb.com/head_square.jpg', 'head_myself_squared_bg 保留');
+});
+
 /* ---------- 运行 ---------- */
 
 (async function () {

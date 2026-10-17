@@ -14,22 +14,22 @@ BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/su
 #    并顺手把响应里其它组件字段（挂件动态形态等）按字段名换掉。
 BiliSkinApply = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin(?:\?.*)?$,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*）、收藏集的「主题套装」预览页
+# 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*、/h5/garb/*）、收藏集的「主题套装」预览页
 #    （/blackboard/fe/suit-preview.html）、收藏集大厅（/garb/collection-hall/*）。
-BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html|garb\/collection-hall),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/(?:mall|garb)\/|blackboard\/fe\/|garb\/),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 4. 嗅探：记下这一路上加载过的装扮资源，供「应用装扮」按钮取用。三条来源：
 #    a) 套装详情里的整套 suit_items；
 #    b) 收藏集 collect_infos 里的 redeem_item_*（头像挂件 / 评论背景 / 主题套装…）；
 #    c) 已拥有资产列表 x/garb/user/asset/list、x/garb/user/pendant/list。
 #    b/c 会另存一份 7 天有效的「持久候选」，所以逛完收藏集再回面板也拿得到。
-BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinSniff = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 5. 评论装扮 / 头像挂件：把「自己的」member.user_sailing_v2.card_bg、member.user_sailing.pendant 换成装扮里的图。
-BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/|polymer\/web-dynamic\/|polymer\/v2\/dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic|polymer\/web-dynamic|polymer\/v2\/dynamic),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）。
-BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+# 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）；新版 business splash (show/list)。
+BiliSkinSplash = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/v2\/splash\/,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 7. Chronos 开屏包：捕获服务端发过的 {url, md5, sign}，并把响应换成选中的那一组。
 #    包体有 RSA 签名（服务端私钥），伪造不了，所以这里只做「回放」。
@@ -39,7 +39,7 @@ BiliSkinChronos = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.
 #    不猜结构，按字段名把命中的组件图换掉（挂件的 pendantUrl / pendant_url /
 #    image_enhance、空间海报的 image1..9_portrait、点赞的 image_ani、
 #    进度条的 *_png、加载动画的 loading_url）。
-BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/(?:v2\/space|v2\/account\/mine|v2\/account\/myinfo|space\/myinfo|member\/app\/pendant|vas\/digital|garb\/skin),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 9. gRPC 装扮服务（SailingEquipMulti / UserCardMulti）：改 protobuf 里自己的那条。
 #    binary-body-mode=true 才能改二进制。pattern 只圈 garb 相关方法，别的 gRPC 流量不碰。

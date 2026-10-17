@@ -355,15 +355,19 @@
   function apiCollectRewards(actId, lotteryId) {
     var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
     return tryEndpoints([
+      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base,
+      API + '/x/vas/dlc_act/act/basic/v2?' + base,
+      API + '/x/vas/dlc_act/module/list?' + base,
       API + '/x/vas/dlc_act/asset_bag_list?' + base,
-      API + '/x/vas/dlc_act/asset_bag_v2?' + base,
-      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base
+      API + '/x/vas/dlc_act/asset_bag_v2?' + base
     ]);
   }
   /* 收藏集主页详情（返回 collect_infos 里的兑换物） */
   function apiLotteryDetail(actId, lotteryId) {
     var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
     return tryEndpoints([
+      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base,
+      API + '/x/vas/dlc_act/act/basic/v2?' + base,
       API + '/x/vas/dlc_act/act/card/detail?' + base,
       API + '/x/vas/dlc_act/card/widget_info_v2?' + base,
       API + '/x/vas/dlc_act/lottery_home_detail?' + base
@@ -646,6 +650,34 @@
     return '';
   }
 
+  /* 收藏集卡片列表 (card_list) 提取为动态卡片候选 */
+  function mapCollectionCards(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.card_list) || [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i] || {};
+      var img = c.card_img || '';
+      if (!isHttpUrl(img)) continue;
+      var cid = c.card_type_id || c.id || (i + 1);
+      var cname = c.card_name || ('卡片 ' + cid);
+      out.push({
+        id: cid,
+        name: cname,
+        preview: img,
+        ver: 1700000000,
+        components: {
+          card: { id: cid, name: cname, image: img, url: img },
+          card_bg: { id: cid, name: cname, image: img, url: img }
+        },
+        from: 'collect_card',
+        partial: true,
+        typeName: '动态卡片'
+      });
+    }
+    return out;
+  }
+
   /* 收藏集兑换物 -> 单组件候选。
      头像挂件 / 评论背景 / 动态卡片 这类**不是套装**，拿 id 去查详情查不到，
      但 collect_infos 里直接给了 redeem_item_image —— 有图就能当候选用。
@@ -664,11 +696,17 @@
 
       if (!kind || kind === 'skin' || !hasImg) {
         if (id) {
+          var fb = {};
+          if (hasImg) {
+            fb.card = { id: id || 0, name: name, image: img, url: img };
+            fb.card_bg = { id: id || 0, name: name, image: img, url: img };
+            if (kind === 'skin') fb.skin = { id: id || 0, name: name, preview: img };
+          }
           out.push({
             id: id,
             name: name,
             preview: hasImg ? img : '',
-            components: {},
+            components: fb,
             from: 'collect',
             needResolve: true,
             typeName: it.redeem_item_type_name || ''
@@ -924,6 +962,18 @@
         var extra = mapRedeemIds(rawList[r2i]);
         for (var n = 0; n < extra.length; n++) {
           if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);
+        }
+        /* 收藏集卡片列表 (card_list) 也是组件候选 */
+        var cardHits = mapCollectionCards(rawList[r2i]);
+        for (var ch = 0; ch < cardHits.length; ch++) {
+          var dupC = false;
+          for (var qc = 0; qc < merged.length; qc++) {
+            if (String(merged[qc].id) === String(cardHits[ch].id)) {
+              dupC = true;
+              break;
+            }
+          }
+          if (!dupC) merged.push(cardHits[ch]);
         }
         /* 头像挂件 / 评论背景这类不是套装，id 查不出详情，直接按图拼候选 */
         var partials = mapRedeemComponents(rawList[r2i]);
@@ -2019,14 +2069,14 @@
 
   /* 按钮该出现的页面：
      - /h5/mall/*                装扮商城、详情页、收藏集
-     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页）
-     - /garb/collection-hall/*   收藏集大厅
-     注意 /h5/garb/draw-card 这类抽卡页不放按钮——那里没有装扮包数据。 */
+     - /h5/garb/*                抽卡/数字藏品/装扮页
+     - /blackboard/fe/*          收藏集的「主题套装」预览页与相关活动页
+     - /garb/*                   收藏集大厅等 */
   function isTargetPage(p) {
     return (
-      /h5\/mall/.test(p) ||
-      /blackboard\/fe\/suit-preview\.html/.test(p) ||
-      /garb\/collection-hall/.test(p)
+      /h5\/(?:mall|garb)/.test(p) ||
+      /blackboard\/fe\//.test(p) ||
+      /garb\//.test(p)
     );
   }
 
