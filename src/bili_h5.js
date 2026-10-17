@@ -30,12 +30,17 @@
   var POS_KEY = 'bss_btn_pos';
   var MAX_RESOLVE = 8;
 
-  /* suit_items 里的全部组件类型。顺序即展示顺序。 */
+  /* suit_items 里的全部组件类型。顺序即展示顺序。
+     ⚠️ pendant（头像挂件）**不在** suit_items 里 —— 实测 60 套在售装扮的
+     suit_items 只有下面 8 个键。挂件是独立资产，只在收藏集兑换物
+     （redeem_item_type_name = "头像挂件"）和已拥有资产列表里出现，
+     由 Surge 侧抓成「只有 pendant 一个组件」的候选。 */
   var COMPONENTS = [
     'skin',
     'loading',
     'card',
     'card_bg',
+    'pendant',
     'thumbup',
     'play_icon',
     'space_bg',
@@ -48,6 +53,7 @@
     loading: '加载动画',
     card: '动态卡片',
     card_bg: '评论装扮',
+    pendant: '头像挂件',
     thumbup: '点赞特效',
     play_icon: '进度条',
     space_bg: '空间海报',
@@ -243,6 +249,10 @@
   function bridgeSeen(since) {
     return bget('seen?since=' + (since || 0));
   }
+  /* 持久候选：App 原生页（收藏集 / 资产列表）里抓到的，7 天有效 */
+  function bridgeFound() {
+    return bget('found');
+  }
   function bridgeSelfMid(mid) {
     return bpost('selfmid', { mid: mid });
   }
@@ -266,6 +276,9 @@
   }
   function bridgeExport() {
     return bget('export');
+  }
+  function bridgeApiLog() {
+    return bget('apilog');
   }
   function bridgeImport(obj) {
     return bpost('import', obj);
@@ -325,18 +338,36 @@
   function apiSuitDetailV2(id) {
     return jget(API + '/x/garb/v2/mall/suit/detail?item_id=' + id + '&part=suit');
   }
-  /* 收藏集的奖励清单（v2 才带「动态主题套装」，v1 不带）。
+  /* 依次试多个接口，返回第一个 code==0 的响应。
+     收藏集接口在 App 与 web 端不一样，多试几个总比只试一个强。 */
+  async function tryEndpoints(urls) {
+    for (var i = 0; i < urls.length; i++) {
+      try {
+        var r = await jget(urls[i]);
+        if (r && r.code === 0) return r;
+      } catch (e) {}
+    }
+    return null;
+  }
+  /* 收藏集的奖励清单。
+     App 侧真实接口是 x/vas/dlc_act/*（不是 web 的 lottery_home_detail）；
      响应结构：data.collect_list.collect_infos[]（新版）或 data.collect_list[]（旧版）。 */
   function apiCollectRewards(actId, lotteryId) {
-    var q = '/x/vas/dlc_act/lottery/home_detail/v2?act_id=' + actId;
-    if (lotteryId) q += '&lottery_id=' + lotteryId;
-    return jget(API + q);
+    var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
+    return tryEndpoints([
+      API + '/x/vas/dlc_act/asset_bag_list?' + base,
+      API + '/x/vas/dlc_act/asset_bag_v2?' + base,
+      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base
+    ]);
   }
-  /* 收藏集主页详情（权威接口，返回 collect_infos 里的兑换物） */
+  /* 收藏集主页详情（返回 collect_infos 里的兑换物） */
   function apiLotteryDetail(actId, lotteryId) {
-    var q = '/x/vas/dlc_act/lottery_home_detail?act_id=' + actId;
-    if (lotteryId) q += '&lottery_id=' + lotteryId;
-    return jget(API + q);
+    var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
+    return tryEndpoints([
+      API + '/x/vas/dlc_act/act/card/detail?' + base,
+      API + '/x/vas/dlc_act/card/widget_info_v2?' + base,
+      API + '/x/vas/dlc_act/lottery_home_detail?' + base
+    ]);
   }
   /* 收藏集卡片的开屏信息（收藏集专属开屏动画） */
   function apiCollectSplash(actId) {
@@ -403,6 +434,9 @@
       out.md5 = p.package_md5 || '';
     } else if (kind === 'space_bg') {
       out.url = p.image1_portrait || p.image1_landscape || p.image || '';
+    } else if (kind === 'pendant') {
+      out.url = p.image || p.image_enhance || p.pendant_pic || p.preview || '';
+      out.enhance = p.image_enhance || p.imageEnhance || '';
     } else {
       out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';
     }
@@ -572,6 +606,95 @@
     return out;
   }
 
+  /* 有没有任何一个组件（收藏集 / 资产列表抓到的「单组件」候选没有 package_url） */
+  function hasAnyComponent(e) {
+    var c = e && e.components;
+    if (!c || typeof c !== 'object') return false;
+    for (var k in c) {
+      if (Object.prototype.hasOwnProperty.call(c, k)) return true;
+    }
+    return false;
+  }
+
+  /* 兑换物类型名 -> 组件。B站自己就是按 redeem_item_type_name 显示的，
+     数字类型各活动不统一（实测见过 1/3/4/5/1001），所以按名字映射最稳。 */
+  var TYPE_NAME_COMPONENT = {
+    头像挂件: 'pendant',
+    挂件: 'pendant',
+    粉丝挂件: 'pendant',
+    评论背景: 'card_bg',
+    评论装扮: 'card_bg',
+    动态卡片: 'card',
+    卡片: 'card',
+    空间头图: 'space_bg',
+    空间海报: 'space_bg',
+    加载动画: 'loading',
+    进度条: 'play_icon',
+    点赞效果: 'thumbup',
+    点赞: 'thumbup',
+    个性主题: 'skin',
+    主题: 'skin'
+  };
+
+  function kindOfTypeName(name) {
+    var s = String(name == null ? '' : name).trim();
+    if (!s) return '';
+    if (TYPE_NAME_COMPONENT[s]) return TYPE_NAME_COMPONENT[s];
+    for (var k in TYPE_NAME_COMPONENT) {
+      if (s.indexOf(k) >= 0) return TYPE_NAME_COMPONENT[k];
+    }
+    return '';
+  }
+
+  /* 收藏集兑换物 -> 单组件候选。
+     头像挂件 / 评论背景 / 动态卡片 这类**不是套装**，拿 id 去查详情查不到，
+     但 collect_infos 里直接给了 redeem_item_image —— 有图就能当候选用。
+     主题套装那种只带 id，标 needResolve 交给上层去拉详情。 */
+  function mapRedeemComponents(raw) {
+    var out = [];
+    var list = collectInfos(raw);
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i] || {};
+      var kind = kindOfTypeName(it.redeem_item_type_name);
+      var img = it.redeem_item_image || it.redeem_detail_image || '';
+      var idStr = String(it.redeem_item_id || '');
+      var name = it.redeem_item_name || '';
+      var id = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
+      var hasImg = /^https?:\/\//.test(img);
+
+      if (!kind || kind === 'skin' || !hasImg) {
+        if (id) {
+          out.push({
+            id: id,
+            name: name,
+            preview: hasImg ? img : '',
+            components: {},
+            from: 'collect',
+            needResolve: true,
+            typeName: it.redeem_item_type_name || ''
+          });
+        }
+        continue;
+      }
+
+      var comp = { id: id || 0, name: name, url: img };
+      if (kind === 'pendant') comp.image = img;
+      var comps = {};
+      comps[kind] = comp;
+      out.push({
+        id: id || name,
+        name: name,
+        preview: img,
+        ver: 1700000000,
+        components: comps,
+        from: 'collect',
+        partial: true,
+        typeName: it.redeem_item_type_name || ''
+      });
+    }
+    return out;
+  }
+
   function mergeById() {
     var out = [];
     var seen = {};
@@ -579,7 +702,9 @@
       var list = arguments[i] || [];
       for (var j = 0; j < list.length; j++) {
         var e = list[j];
-        if (!e || !e.id || !e.package_url || seen[e.id]) continue;
+        if (!e || !e.id || seen[e.id]) continue;
+        /* 只带 id 的（收藏集主题套装）也留，后面补一次详情 */
+        if (!e.package_url && !e.needResolve && !hasAnyComponent(e)) continue;
         seen[e.id] = 1;
         out.push(e);
       }
@@ -757,13 +882,30 @@
       stateHits = scanState(window);
     } catch (e) {}
 
+    /* 1) 本页嗅探到的（since = 进入本页的时刻） */
     var sniffed = [];
     try {
       var r = await bridgeSeen(enterTs);
       sniffed = (r && r.data) || [];
     } catch (e) {}
 
-    var merged = mergeById(sniffed, stateHits);
+    /* 2) 之前在 App 原生页逛的时候抓到的（30 分钟内，不限本页）。
+       收藏集是原生页，逛完再回面板，enterTs 早就过去了 —— 不带上这批就永远「没获取到」。 */
+    var recent = [];
+    try {
+      var r2 = await bridgeSeen(0);
+      recent = (r2 && r2.data) || [];
+    } catch (e) {}
+
+    /* 3) 持久候选：收藏集兑换物 / 已拥有资产列表，7 天有效。
+       数量上限单独收一下，免得面板一开就是几十张卡。 */
+    var found = [];
+    try {
+      var r3 = await bridgeFound();
+      found = ((r3 && r3.data) || []).slice(0, 40);
+    } catch (e) {}
+
+    var merged = mergeById(sniffed, stateHits, found, recent);
 
     var ids = collectIds(document, location);
 
@@ -778,12 +920,37 @@
       try {
         rawList.push(await apiCollectRewards(actId, param(location, 'lottery_id')));
       } catch (e) {}
-      for (var r2 = 0; r2 < rawList.length; r2++) {
-        var extra = mapRedeemIds(rawList[r2]);
+      for (var r2i = 0; r2i < rawList.length; r2i++) {
+        var extra = mapRedeemIds(rawList[r2i]);
         for (var n = 0; n < extra.length; n++) {
           if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);
         }
+        /* 头像挂件 / 评论背景这类不是套装，id 查不出详情，直接按图拼候选 */
+        var partials = mapRedeemComponents(rawList[r2i]);
+        for (var p = 0; p < partials.length; p++) {
+          var dupP = false;
+          for (var q = 0; q < merged.length; q++) {
+            if (String(merged[q].id) === String(partials[p].id)) {
+              dupP = true;
+              break;
+            }
+          }
+          if (!dupP) merged.push(partials[p]);
+        }
       }
+    }
+
+    /* 只有 id 的候选（收藏集的主题套装）：在页面里补一次详情 */
+    var pending = [];
+    for (var m0 = 0; m0 < merged.length; m0++) {
+      if (merged[m0] && merged[m0].needResolve && merged[m0].id) pending.push(m0);
+    }
+    for (var m1 = 0; m1 < pending.length && m1 < MAX_RESOLVE; m1++) {
+      var idx = pending[m1];
+      try {
+        var full = toEquip(await apiSuitDetail(merged[idx].id));
+        if (full) merged[idx] = full;
+      } catch (e) {}
     }
 
     for (var i = 0; i < ids.length; i++) {
@@ -800,6 +967,11 @@
         if (e) merged.push(e);
       } catch (err) {}
     }
+
+    /* 补不出详情的（只有 id、也没图）丢掉，免得点「应用」才报错 */
+    merged = merged.filter(function (x) {
+      return x && (x.package_url || x.isSplash || x.isChronos || hasAnyComponent(x));
+    });
 
     /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list 与 event/list2 */
     try {
@@ -1496,6 +1668,62 @@
 
   /* ===================== 设置 / 导出导入 ===================== */
 
+  /* 自定义开屏图：品牌开屏那条路会把我们塞的条目 unshift 进 data.list / data.show，
+     不依赖服务端下发候选 —— 所以随便给一张图就能当开屏用。
+     活动开屏要 md5 校验，改图得先把图拉下来算 md5，这一步 Surge 侧会做；
+     Chronos 开屏有服务端 RSA 签名，只能从候选里回放。 */
+  function openSplashSet() {
+    openSheet(
+      '自定义开屏图',
+      '填一张图片直链（竖图更好看）。保存后杀掉后台重进 B站。',
+      [
+        { key: 'save', label: '保存', pink: true },
+        { key: 'clear', label: '清除' }
+      ],
+      '<input id="bss-sp" placeholder="https://i0.hdslb.com/bfs/....jpg" ' +
+        'style="width:100%;box-sizing:border-box;height:40px;padding:0 12px;border:none;' +
+        'border-radius:10px;background:#f4f4f5;font-size:12px;outline:none">' +
+        '<div style="margin-top:10px;font-size:12px;color:#9499a0;line-height:1.7">' +
+        '只走「品牌开屏」通道。活动开屏 / Chronos 开屏需要服务端签名或 md5，' +
+        '只能从下面候选里挑。</div>'
+    );
+
+    var el = panel.querySelector('#bss-sp');
+    var save = panel.querySelector('[data-act="save"]');
+    if (save) {
+      save.addEventListener('click', async function () {
+        var v = el ? String(el.value || '').trim() : '';
+        if (!/^https?:\/\//.test(v)) return toast('要一个 http(s) 图片直链');
+        try {
+          var r = await bridgeSplashSet({
+            kind: 'brand',
+            id: 900000001,
+            thumb: v,
+            duration: 3000
+          });
+          if (r && r.code === 0) {
+            toast('已设为开屏图\n杀掉后台重进 B站生效', true);
+            closePanel();
+          } else {
+            toast('保存失败：' + ((r && r.msg) || '未知'));
+          }
+        } catch (e) {
+          toast('保存失败：' + e.message);
+        }
+      });
+    }
+    var clr = panel.querySelector('[data-act="clear"]');
+    if (clr) {
+      clr.addEventListener('click', async function () {
+        try {
+          await bget('splash/clear');
+        } catch (e) {}
+        toast('已清除', true);
+        closePanel();
+      });
+    }
+  }
+
   /* 设置面板：开关 + 导出/导入 + 诊断 */
   async function openSettings() {
     var diag = null;
@@ -1525,6 +1753,7 @@
             '主题/加载动画: ' + (diag.equip ? (diag.equip.hasSkin ? '有' : '无') + ' / ' + (diag.equip.hasLoading ? '有' : '无') : '—') + '\n' +
             '我的 mid: ' + (diag.selfMid || '未知') + '\n' +
             '本页嗅探: ' + diag.seen + ' 条\n' +
+            '持久候选: ' + (diag.found || 0) + ' 条（收藏集 / 资产列表，7 天）\n' +
             '藏馆: ' + diag.gallery + ' 套\n' +
             'Chronos 候选: ' + diag.chronos
         ) +
@@ -1534,7 +1763,12 @@
     openSheet(
       t('settings'),
       '',
-      [{ key: 'export', label: t('export'), pink: true }, { key: 'import', label: t('import') }],
+      [
+        { key: 'export', label: t('export'), pink: true },
+        { key: 'import', label: t('import') },
+        { key: 'splashset', label: '自定义开屏图' },
+        { key: 'apilog', label: '导出接口日志' }
+      ],
       toggleRow('allMembers', '评论装扮改所有人（默认只改自己）') +
         toggleRow('notify', '应用成功发系统通知') +
         toggleRow('autoScan', '进页面自动扫描') +
@@ -1567,6 +1801,32 @@
     if (expBtn) expBtn.addEventListener('click', openExport);
     var impBtn = panel.querySelector('[data-act="import"]');
     if (impBtn) impBtn.addEventListener('click', openImport);
+    var spBtn = panel.querySelector('[data-act="splashset"]');
+    if (spBtn) spBtn.addEventListener('click', openSplashSet);
+    var logBtn = panel.querySelector('[data-act="apilog"]');
+    if (logBtn) {
+      logBtn.addEventListener('click', async function () {
+        var r = null;
+        try {
+          r = await bridgeApiLog();
+        } catch (e) {}
+        var list = (r && r.data) || [];
+        if (!list.length) {
+          return toast('还没有接口日志。\n先去开屏 / 空间 / 收藏集页逛一圈再回来。');
+        }
+        var text = JSON.stringify(list, null, 1);
+        openSheet(
+          '接口日志',
+          '共 ' + list.length + ' 条，长按全选复制',
+          [],
+          '<textarea readonly style="width:100%;box-sizing:border-box;height:320px;' +
+            'border:1px solid #e3e5e7;border-radius:10px;padding:10px;font-size:11px;' +
+            'line-height:1.5;font-family:monospace;color:#18191c;background:#fafafa">' +
+            esc(text) +
+            '</textarea>'
+        );
+      });
+    }
   }
 
   /* 导出：把整份配置吐成文本，方便换设备 */
@@ -1826,6 +2086,8 @@
     isTargetPage: isTargetPage,
     mapRedeemIds: mapRedeemIds,
     mapRedeemItems: mapRedeemItems,
+    mapRedeemComponents: mapRedeemComponents,
+    kindOfTypeName: kindOfTypeName,
     collectInfos: collectInfos,
     mapSuit: mapSuit,
     mapSearch: mapSearch,

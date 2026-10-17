@@ -14,8 +14,14 @@
  *   loading    加载动画  -> x/resource/show/skin 的 data.load_equip
  *   card       动态卡片  -> member.user_sailing_v2.card_bg（动态/评论响应）
  *   card_bg    评论装扮  -> member.user_sailing_v2.card_bg
- *   pendant    头像挂件  -> member.user_sailing.pendant / member.pendant
+ *   pendant    头像挂件  -> member.user_sailing.pendant / member.pendant / 我的页 pendantUrl
  *   splash     开屏动画  -> x/v2/splash/brand/list 的 list/show
+ *
+ * ⚠️ 头像挂件（pendant）不在 suit_items 里 —— 对 60 套在售装扮实测，
+ *    suit_items 的键只有 skin/loading/card/card_bg/thumbup/play_icon/space_bg/emoji_package。
+ *    挂件是**独立资产**：收藏集兑换物（redeem_item_type_name = 头像挂件）、
+ *    x/garb/user/pendant/list、x/garb/user/asset/list 才会出现。
+ *    所以 handleCandidates 会把这些来源单独抓成「只有某个组件」的候选。
  *
  * 本文件由 scripts/build-bili.js 从 src/bili_skin.src.js 生成，请勿直接改 bili_skin.js。
  */
@@ -23,6 +29,7 @@
 var KEY_EQUIP = 'BiliSkinEquip';
 var KEY_GALLERY = 'BiliSkinGallery';
 var KEY_SEEN = 'BiliSkinSeen';
+var KEY_FOUND = 'BiliSkinFound';
 var KEY_SELF = 'BiliSkinSelf';
 var KEY_SPLASH = 'BiliSkinSplash';
 var KEY_SPLASH_LIST = 'BiliSkinSplashList';
@@ -31,9 +38,12 @@ var KEY_CHRONOS_LIST = 'BiliSkinChronosList';
 var KEY_PREFS = 'BiliSkinPrefs';
 var KEY_EQUIPS = 'BiliSkinEquips';
 var KEY_REMINDERS = 'BiliSkinReminders';
+var KEY_APILOG = 'BiliSkinApiLog';
 var GALLERY_MAX = 300;
-var SEEN_MAX = 40;
-var SEEN_TTL = 600000;
+var SEEN_MAX = 60;
+var SEEN_TTL = 1800000; /* 30 分钟：在 App 里逛完收藏集再回面板也还看得到 */
+var FOUND_MAX = 80; /* 持久候选（收藏集 / 资产列表抓到的），7 天有效 */
+var FOUND_TTL = 604800000;
 var SPLASH_MAX = 30;
 
 /* 默认设置项。H5 侧可以改，改完存 KEY_PREFS。 */
@@ -72,13 +82,16 @@ var FIELD_ALIAS = {
   middle_png: ['middle_png', 'middlePng'],
   image_enhance: ['image_enhance', 'imageEnhance'],
   image_enhance_frame: ['image_enhance_frame', 'imageEnhanceFrame'],
-  card_bg_with_focus: ['card_bg_with_focus', 'cardBgWithFocus']
+  card_bg_with_focus: ['card_bg_with_focus', 'cardBgWithFocus'],
+  /* 头像挂件：我的页 HeaderViewModel 叫 pendantUrl；挂件对象里叫 image / image_enhance；
+     直播那套叫 pendant_pic / pendantImageEnhance。全列上，App 改名只改这张表。 */
+  pendant: ['image', 'url', 'image_enhance', 'pendant_pic', 'pendant_image', 'pendantImage']
 };
 
 /* 字段名 -> 装扮组件。凡是响应里出现这些字段，就把地址换成对应组件的图。
    这样不依赖响应结构——App 把字段放哪一层都能命中。 */
 var FIELD_COMPONENT = {
-  /* 空间海报 */
+  /* 空间海报（实测 properties 里到 image9 都有，早期版本只列到 7） */
   image1_portrait: 'space_bg',
   image1_landscape: 'space_bg',
   image2_portrait: 'space_bg',
@@ -93,6 +106,10 @@ var FIELD_COMPONENT = {
   image6_landscape: 'space_bg',
   image7_portrait: 'space_bg',
   image7_landscape: 'space_bg',
+  image8_portrait: 'space_bg',
+  image8_landscape: 'space_bg',
+  image9_portrait: 'space_bg',
+  image9_landscape: 'space_bg',
   fan_no_image: 'space_bg',
   /* 点赞特效 */
   image_ani: 'thumbup',
@@ -107,12 +124,45 @@ var FIELD_COMPONENT = {
   /* 挂件动态形态 */
   image_enhance: 'pendant',
   image_enhance_frame: 'pendant',
+  /* 加载动画：除了 x/resource/show/skin 的 load_equip，
+     空间页 / 我的页 / 资产列表里也会出现 loading_url —— 一律换掉。
+     （旧版只有 load_equip 一条路，所以加载动画只在视频页下拉刷新里出现。） */
+  loading_url: 'loading',
+  loadingUrl: 'loading',
+  /* 头像挂件（扁平字符串字段）：
+     「我的」页 x/v2/account/mine 的 HeaderViewModel 用 pendantUrl */
+  pendant_url: 'pendant',
+  pendantUrl: 'pendant',
+  pendant_image: 'pendant',
+  pendantImage: 'pendant',
+  pendant_pic: 'pendant',
+  pendantImageEnhance: 'pendant',
+  pendantEnhance: 'pendant',
+  pendantBgImageUrl: 'pendant',
   /* 卡片聚焦态 */
   card_bg_with_focus: 'card'
 };
 
+/* 对象字段：命中后把「对象里的图片字段」换掉。
+   空间页 / 我的页的挂件、卡片是对象（{image, image_enhance, name, pid...}），
+   不是扁平字符串，所以上面那张表命中不了，得单独处理。 */
+var FIELD_OBJECT = {
+  pendant: 'pendant',
+  user_pendant: 'pendant',
+  userPendant: 'pendant',
+  fans_pendant: 'pendant',
+  fansPendant: 'pendant',
+  avatar_pendant: 'pendant',
+  card_bg: 'card_bg',
+  cardBg: 'card_bg',
+  card_bg_with_focus: 'card',
+  cardBgWithFocus: 'card',
+  space_bg: 'space_bg',
+  spaceBg: 'space_bg'
+};
+
 /* 由构建脚本内联的 H5 页面脚本 */
-var H5_PAYLOAD = "/*\n * 哔哩哔哩装扮工作室 —— 注入到 www.bilibili.com/h5/mall/* 的页面脚本\n *\n * 按钮只有一个：「应用装扮」。点它就去**扫描当前页面**上出现的装扮，而不是翻全站目录。\n * 候选来自五个地方，按可靠性排序：\n *   1. Surge 嗅探到的接口响应（本页加载过的 x/garb/* x/vas/* 里含装扮包的条目）\n *   2. 页面 JS 状态（__INITIAL_MIRROR__ / __INITIAL_STATE__ 等）里递归找出的装扮对象\n *   3. DOM 里指向装扮详情页的链接\n *   4. 当前 URL 的参数\n *   5. 收藏集/抽奖页：collect_infos 里的兑换物 id，以及主题套装预览链接\n *\n * 一套「装扮套装」（suit）不只有主题皮肤。suit_items 里可能有：\n *   skin（个性主题）loading（加载动画）card（动态卡片）card_bg（评论装扮）\n *   thumbup（点赞特效）play_icon（进度条）space_bg（空间海报）emoji_package（表情包）\n * 全部一起抓，写进 equip.components，Surge 侧按类型分别注入到对应接口。\n *\n * 拿到候选后：1 个直接应用，多个弹选择列表，0 个给空状态（可清除注入 / 从藏馆里挑）。\n *\n * 与 Surge 的通信走 https://app.bilibili.com/x/surge-skin/ （由 Surge 假响应接管）\n */\n(function () {\n  'use strict';\n  if (window.__BSS_LOADED__) return;\n  window.__BSS_LOADED__ = true;\n\n  var BRIDGE = 'https://app.bilibili.com/x/surge-skin/';\n  var API = 'https://api.bilibili.com';\n  var PINK = '#fb7299';\n  var THUMB = '@360w_360h_1c.webp';\n  var POS_KEY = 'bss_btn_pos';\n  var MAX_RESOLVE = 8;\n\n  /* suit_items 里的全部组件类型。顺序即展示顺序。 */\n  var COMPONENTS = [\n    'skin',\n    'loading',\n    'card',\n    'card_bg',\n    'thumbup',\n    'play_icon',\n    'space_bg',\n    'emoji_package'\n  ];\n\n  /* 组件中文名，用于卡片上的小标签 */\n  var COMPONENT_LABEL = {\n    skin: '主题',\n    loading: '加载动画',\n    card: '动态卡片',\n    card_bg: '评论装扮',\n    thumbup: '点赞特效',\n    play_icon: '进度条',\n    space_bg: '空间海报',\n    emoji_package: '表情包'\n  };\n\n  /* 面板文案。加语言就在这里加一份。 */\n  var LANGS = {\n    zh: {\n      apply: '应用装扮',\n      scanning: '扫描中…',\n      applying: '注入中…',\n      applied: '已应用',\n      pick: '选择要应用的装扮',\n      pickSub: '本页找到 {n} 套，点「应用」生效',\n      detail: '装扮详情',\n      components: '组件',\n      source: '来源',\n      price: '价格',\n      free: '免费',\n      browse: '浏览全部装扮',\n      clear: '清除注入',\n      search: '搜索装扮名，例如「灵魂潮汐」',\n      all: '全部装扮',\n      allSub: '搜名字，或往下翻看全部',\n      category: '分类',\n      sort: '排序',\n      sortNew: '最新',\n      sortHot: '最热',\n      byId: '按 ID 找',\n      idPlaceholder: '输入装扮 ID',\n      go: '查找',\n      loading: '加载中…',\n      noMore: '没有更多了',\n      empty: '本页没找到可用的装扮。\\n点「浏览全部装扮」按名字或 ID 找。',\n      emptyCard: '收藏集页面本身不带装扮数据。\\n点「浏览全部装扮」按名字找，\\n或进收藏集的「主题套装」页再点按钮。',\n      gallery: '藏馆 · 之前应用过的',\n      settings: '设置',\n      export: '导出配置',\n      import: '导入配置',\n      copyHint: '复制下面这段，换设备时粘到「导入配置」里',\n      importHint: '把之前导出的内容粘进来',\n      doImport: '导入',\n      copied: '已复制',\n      diag: '诊断',\n      saved: '已保存',\n      remind: '开售提醒',\n      remindAdded: '已加提醒',\n      removed: '已移除',\n      account: '账号',\n      note: '备注',\n      noteHint: '给这套装扮起个名字'\n    },\n    en: {\n      apply: 'Apply skin',\n      scanning: 'Scanning…',\n      applying: 'Injecting…',\n      applied: 'Applied',\n      pick: 'Pick a skin',\n      pickSub: '{n} found on this page — tap Apply',\n      detail: 'Skin detail',\n      components: 'Components',\n      source: 'Source',\n      price: 'Price',\n      free: 'Free',\n      browse: 'Browse all',\n      clear: 'Clear injection',\n      search: 'Search by name, e.g. \"灵魂潮汐\"',\n      all: 'All skins',\n      allSub: 'Search or scroll',\n      category: 'Category',\n      sort: 'Sort',\n      sortNew: 'Newest',\n      sortHot: 'Hottest',\n      byId: 'By ID',\n      idPlaceholder: 'Enter skin ID',\n      go: 'Go',\n      loading: 'Loading…',\n      noMore: 'No more',\n      empty: 'No skin found on this page.\\nTap \"Browse all\" to search by name or ID.',\n      emptyCard: 'Collection pages carry no skin data.\\nTap \"Browse all\",\\nor open the collection\\'s theme-suit page.',\n      gallery: 'Vault · previously applied',\n      settings: 'Settings',\n      export: 'Export',\n      import: 'Import',\n      copyHint: 'Copy this; paste into Import on another device',\n      importHint: 'Paste exported content here',\n      doImport: 'Import',\n      copied: 'Copied',\n      diag: 'Diagnostics',\n      saved: 'Saved',\n      remind: 'Remind me',\n      remindAdded: 'Reminder added',\n      removed: 'Removed',\n      account: 'Account',\n      note: 'Note',\n      noteHint: 'Name this skin'\n    }\n  };\n\n  var prefs = {\n    allMembers: false,\n    notify: true,\n    autoScan: false,\n    lang: 'zh',\n    splashKeepVideo: false,\n    splashScratch: -1,\n    grpcAll: false\n  };\n\n  function t(key, vars) {\n    var L = LANGS[prefs.lang] || LANGS.zh;\n    var s = L[key] || (LANGS.zh[key] || key);\n    if (vars) {\n      for (var k in vars) {\n        if (Object.prototype.hasOwnProperty.call(vars, k)) {\n          s = s.split('{' + k + '}').join(String(vars[k]));\n        }\n      }\n    }\n    return s;\n  }\n\n  /* 本页进入时间：用来过滤 Surge 嗅探到的候选，只留当前页面的。\n     注入点选在 </head>，所以这个时间早于 SPA 发起请求。 */\n  var enterTs = Date.now();\n\n  /* ===================== 基础工具 ===================== */\n\n  function mk(tag, css, html) {\n    var e = document.createElement(tag);\n    if (css) e.setAttribute('style', css);\n    if (html != null) e.innerHTML = html;\n    return e;\n  }\n\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n\n  function thumb(url) {\n    if (!url) return '';\n    if (!/hdslb\\.com/.test(url)) return url;\n    return url + THUMB;\n  }\n\n  function idFrom(str) {\n    var m = /(?:id|item_id|suit_id|act_id)=(\\d+)/.exec(String(str || ''));\n    return m ? m[1] : '';\n  }\n\n  function jget(url) {\n    return fetch(url, { credentials: 'include' }).then(function (r) {\n      return r.json();\n    });\n  }\n\n  /* ===================== Surge 桥 ===================== */\n\n  function bget(path) {\n    return fetch(BRIDGE + path, { credentials: 'omit' }).then(function (r) {\n      return r.json();\n    });\n  }\n  function bpost(path, obj) {\n    return fetch(BRIDGE + path, {\n      method: 'POST',\n      credentials: 'omit',\n      headers: { 'Content-Type': 'text/plain' },\n      body: JSON.stringify(obj)\n    }).then(function (r) {\n      return r.json();\n    });\n  }\n\n  function bridgeSet(equip) {\n    return bpost('set', equip);\n  }\n  function bridgeGet() {\n    return bget('get');\n  }\n  function bridgeClear() {\n    return bget('clear');\n  }\n  function bridgeGallery() {\n    return bget('gallery');\n  }\n  function bridgeGalleryAdd(equip) {\n    return bpost('gallery/add', equip);\n  }\n  function bridgeSeen(since) {\n    return bget('seen?since=' + (since || 0));\n  }\n  function bridgeSelfMid(mid) {\n    return bpost('selfmid', { mid: mid });\n  }\n  function bridgeSplashList() {\n    return bget('splash/list');\n  }\n  function bridgeSplashSet(sp) {\n    return bpost('splash/set', sp);\n  }\n  function bridgeChronosList() {\n    return bget('chronos/list');\n  }\n  function bridgeChronosSet(ch) {\n    return bpost('chronos/set', ch);\n  }\n  function bridgePrefs() {\n    return bget('prefs');\n  }\n  function bridgePrefsSet(obj) {\n    return bpost('prefs/set', obj);\n  }\n  function bridgeExport() {\n    return bget('export');\n  }\n  function bridgeImport(obj) {\n    return bpost('import', obj);\n  }\n  function bridgeDiag() {\n    return bget('diag');\n  }\n  function bridgeEquips() {\n    return bget('equips');\n  }\n  function bridgeEquipUse(mid) {\n    return bget('equips/use?mid=' + encodeURIComponent(mid));\n  }\n  function bridgeEquipRemove(mid) {\n    return bget('equips/remove?mid=' + encodeURIComponent(mid));\n  }\n  function bridgeReminders() {\n    return bget('reminders');\n  }\n  function bridgeReminderAdd(r) {\n    return bpost('reminders/add', r);\n  }\n\n  /* 拉一次设置，失败就用默认值 */\n  async function loadPrefs() {\n    try {\n      var r = await bridgePrefs();\n      if (r && r.data && typeof r.data === 'object') {\n        for (var k in r.data) {\n          if (Object.prototype.hasOwnProperty.call(r.data, k)) prefs[k] = r.data[k];\n        }\n      }\n    } catch (e) {}\n    return prefs;\n  }\n\n  async function savePrefs(patch) {\n    for (var k in patch) {\n      if (Object.prototype.hasOwnProperty.call(patch, k)) prefs[k] = patch[k];\n    }\n    try {\n      await bridgePrefsSet(patch);\n    } catch (e) {}\n    return prefs;\n  }\n\n  /* ===================== B 站接口 ===================== */\n\n  function apiSuitDetail(id) {\n    return jget(API + '/x/garb/mall/item/suit/v2?part=suit&item_id=' + id).then(function (r) {\n      if (toEquip(r)) return r;\n      /* 公开接口拿不到时试内部接口——预购 / 收藏集主题套装走这条 */\n      return jget(API + '/x/garb/internal/v2/mall/suit/detail?item_id=' + id + '&part=suit');\n    });\n  }\n  /* 装扮详情（v2）。收藏集的主题套装也用这个 id 直接查。 */\n  function apiSuitDetailV2(id) {\n    return jget(API + '/x/garb/v2/mall/suit/detail?item_id=' + id + '&part=suit');\n  }\n  /* 收藏集的奖励清单（v2 才带「动态主题套装」，v1 不带）。\n     响应结构：data.collect_list.collect_infos[]（新版）或 data.collect_list[]（旧版）。 */\n  function apiCollectRewards(actId, lotteryId) {\n    var q = '/x/vas/dlc_act/lottery/home_detail/v2?act_id=' + actId;\n    if (lotteryId) q += '&lottery_id=' + lotteryId;\n    return jget(API + q);\n  }\n  /* 收藏集主页详情（权威接口，返回 collect_infos 里的兑换物） */\n  function apiLotteryDetail(actId, lotteryId) {\n    var q = '/x/vas/dlc_act/lottery_home_detail?act_id=' + actId;\n    if (lotteryId) q += '&lottery_id=' + lotteryId;\n    return jget(API + q);\n  }\n  /* 收藏集卡片的开屏信息（收藏集专属开屏动画） */\n  function apiCollectSplash(actId) {\n    return jget(API + '/x/vas/dlc_act/card/splash_info?act_id=' + actId);\n  }\n  /* 官方搜索：服务端搜，装扮(part_id=6)和收藏集(part_id=0)都会返回 */\n  function apiSearch(kw) {\n    return jget(\n      API + '/x/garb/v2/mall/home/search?key_word=' + encodeURIComponent(kw) + '&pn=1&ps=20'\n    );\n  }\n  /* 装扮目录分页：part_id 默认 6（装扮），sort_type 默认 2。全站约 3400 套 */\n  function apiCatalogPage(pn, partId, sortType) {\n    var p = partId || 6;\n    var s = sortType === undefined || sortType === null ? 2 : sortType;\n    return jget(\n      API +\n        '/x/garb/v2/mall/partition/item/list?part_id=' +\n        p +\n        '&pn=' +\n        pn +\n        '&sort_type=' +\n        s\n    );\n  }\n  /* 当前登录用户 mid（用于 Surge 侧只改自己的评论装扮） */\n  function apiNav() {\n    return jget(API + '/x/web-interface/nav');\n  }\n\n  /* ===================== 纯逻辑（可测试） ===================== */\n\n  /* skin 组件的配色字段 -> user_equip.data */\n  function skinData(p) {\n    p = p || {};\n    return {\n      color_mode: p.color_mode || 'light',\n      color: p.color || '#212121',\n      color_second_page: p.color_second_page || '#ffffff',\n      side_bg_color: p.side_bg_color || p.color_second_page || '#ffffff',\n      tail_color: p.tail_color || '#996c00',\n      tail_color_selected: p.tail_color_selected || '#0d6872',\n      tail_icon_ani: String(p.tail_icon_ani) === 'true',\n      tail_icon_ani_mode: p.tail_icon_ani_mode || 'once',\n      tail_icon_mode: p.tail_icon_mode || 'img'\n    };\n  }\n\n  /* 一个 suit_items 子项 -> 归一化组件对象。\n     把 properties 摊平到顶层，再补上 item_id / name，Surge 侧按类型取用。 */\n  function componentOf(kind, entry) {\n    if (!entry || typeof entry !== 'object') return null;\n    var p = entry.properties || {};\n    var out = { kind: kind, id: entry.item_id || 0, name: entry.name || '' };\n    for (var k in p) {\n      if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];\n    }\n    /* 各类型的「包/图」地址做一次归一，方便 Surge 侧统一读取 */\n    if (kind === 'loading') {\n      out.url = p.loading_url || '';\n      out.frame_url = p.loading_frame_url || '';\n    } else if (kind === 'skin') {\n      out.url = p.package_url || '';\n      out.md5 = p.package_md5 || '';\n    } else if (kind === 'space_bg') {\n      out.url = p.image1_portrait || p.image1_landscape || p.image || '';\n    } else {\n      out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';\n    }\n    return out;\n  }\n\n  /* 一个「容器 + skin 子项」-> user_equip 配置。\n     同时把容器 suit_items 里的其它组件（loading/card/…）一并收进 components。 */\n  function equipFrom(container, skin) {\n    var p = (skin && skin.properties) || {};\n    if (!p.package_url) return null;\n    var item = (container && container.item) || {};\n    var equip = {\n      id: item.item_id || (container && container.item_id) || (skin && skin.item_id) || 0,\n      name: item.name || (container && container.name) || (skin && skin.name) || '',\n      preview: p.image_preview || p.image_cover || '',\n      ver: Number(p.ver) || 1700000000,\n      package_url: p.package_url,\n      package_md5: p.package_md5 || '',\n      data: skinData(p),\n      components: {}\n    };\n\n    /* 把整套套装的所有组件都收进来。没有 suit_items 时至少放进 skin 自己。 */\n    var si = (container && container.suit_items) || null;\n    if (si && typeof si === 'object') {\n      for (var i = 0; i < COMPONENTS.length; i++) {\n        var kind = COMPONENTS[i];\n        var arr = si[kind];\n        var c = componentOf(kind, Array.isArray(arr) ? arr[0] : arr);\n        if (c) equip.components[kind] = c;\n      }\n    }\n    if (!equip.components.skin) {\n      equip.components.skin = componentOf('skin', skin);\n    }\n    return equip;\n  }\n\n  /* 装扮详情响应 -> user_equip 配置 */\n  function toEquip(d) {\n    var da = d && d.data;\n    if (!da) return null;\n    var skins = (da.suit_items && da.suit_items.skin) || [];\n    return equipFrom(da, skins[0]);\n  }\n\n  /* 递归找出所有「带装扮包的容器」 */\n  function harvest(node, out, depth) {\n    if (!node || typeof node !== 'object' || depth > 9) return;\n    if (Array.isArray(node)) {\n      for (var i = 0; i < node.length; i++) harvest(node[i], out, depth + 1);\n      return;\n    }\n    if (node.suit_items && typeof node.suit_items === 'object') {\n      var skins = node.suit_items.skin;\n      if (Array.isArray(skins)) {\n        for (var j = 0; j < skins.length; j++) {\n          var e = equipFrom(node, skins[j]);\n          if (e) out.push(e);\n        }\n      }\n    }\n    for (var k in node) {\n      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;\n      try {\n        harvest(node[k], out, depth + 1);\n      } catch (err) {}\n    }\n  }\n\n  function scanState(win) {\n    var out = [];\n    var roots = [\n      win.__INITIAL_MIRROR__,\n      win.__INITIAL_STATE__,\n      win.__NUXT__,\n      win.__PRELOADED_STATE__,\n      win.__DATA__,\n      win.__GARB_DATA__\n    ];\n    for (var i = 0; i < roots.length; i++) {\n      if (roots[i]) harvest(roots[i], out, 0);\n    }\n    return out;\n  }\n\n  /* 从 URL 与 DOM 里收集「可能指向装扮」的 id */\n  function collectIds(doc, loc) {\n    var seen = {};\n    var out = [];\n    function add(v) {\n      var s = String(v == null ? '' : v).replace(/\\D/g, '');\n      if (!s || s.length < 3 || seen[s]) return;\n      seen[s] = 1;\n      out.push(s);\n    }\n\n    var s = (loc.search || '') + '&' + (loc.hash || '');\n    var re = /[?&](?:id|item_id|suit_id)=(\\d+)/g;\n    var m;\n    while ((m = re.exec(s)) !== null) add(m[1]);\n\n    try {\n      var links = doc.querySelectorAll ? doc.querySelectorAll('a[href]') : [];\n      for (var i = 0; i < links.length; i++) {\n        var href = links[i].getAttribute('href') || '';\n        if (!/suit\\/detail|mall|suit-preview|garbDetail/i.test(href)) continue;\n        add(idFrom(href));\n      }\n    } catch (e) {}\n\n    return out.slice(0, MAX_RESOLVE);\n  }\n\n  /* 从 URL 里取数字参数 */\n  function param(loc, name) {\n    var s = (loc.search || '') + '&' + (loc.hash || '');\n    var m = new RegExp('[?&]' + name + '=(\\\\d+)').exec(s);\n    return m ? m[1] : '';\n  }\n\n  /* 收藏集奖励 -> 可尝试的装扮 id。\n     type=4 Suit：redeem_item_id 本身就是装扮 id。\n     type=5 MaterialCombination（动态主题套装）：是若干子项 id，用 & 分隔。\n     兼容两种 collect_list 结构：\n       新版 data.collect_list.collect_infos[]（lottery_home_detail）\n       旧版 data.collect_list[]（lottery/home_detail/v2） */\n  function collectInfos(raw) {\n    var cl = raw && raw.data && raw.data.collect_list;\n    if (!cl) return [];\n    if (Array.isArray(cl)) return cl;\n    if (Array.isArray(cl.collect_infos)) return cl.collect_infos;\n    return [];\n  }\n\n  function mapRedeemIds(raw) {\n    var out = [];\n    var list = collectInfos(raw);\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      var t = Number(it.redeem_item_type);\n      if (t !== 4 && t !== 5) continue;\n      var parts = String(it.redeem_item_id || '').split('&');\n      for (var j = 0; j < parts.length; j++) {\n        var s = parts[j].replace(/\\D/g, '');\n        if (s.length >= 5) out.push(s);\n      }\n    }\n    return out;\n  }\n\n  /* 收藏集兑换物 -> 装扮候选（id + 名字 + 预览图），用于空状态里给线索 */\n  function mapRedeemItems(raw) {\n    var out = [];\n    var list = collectInfos(raw);\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      var t = Number(it.redeem_item_type);\n      if (t !== 4 && t !== 5) continue;\n      var name = it.redeem_item_name || '';\n      var img = it.redeem_item_image || '';\n      var jump = it.jump_url || it.garb_suit_url || '';\n      if (!name && !img && !jump) continue;\n      out.push({ name: name, preview: img, jump: jump, type: t });\n    }\n    return out;\n  }\n\n  function mergeById() {\n    var out = [];\n    var seen = {};\n    for (var i = 0; i < arguments.length; i++) {\n      var list = arguments[i] || [];\n      for (var j = 0; j < list.length; j++) {\n        var e = list[j];\n        if (!e || !e.id || !e.package_url || seen[e.id]) continue;\n        seen[e.id] = 1;\n        out.push(e);\n      }\n    }\n    return out;\n  }\n\n  /* 一套装扮带了哪些组件（用于卡片角标） */\n  function componentBadges(it) {\n    if (it && it.isChronos) return ['Chronos 开屏'];\n    if (it && it.isSplash) return ['开屏动画'];\n    var c = it && it.components;\n    if (!c) return [];\n    var out = [];\n    for (var i = 0; i < COMPONENTS.length; i++) {\n      var k = COMPONENTS[i];\n      if (k === 'skin') continue;\n      if (c[k]) out.push(COMPONENT_LABEL[k] || k);\n    }\n    return out;\n  }\n\n  /* Surge 侧捕获到的 Chronos 包 -> 候选卡片。\n     注意：包体有 RSA 签名，只能回放服务端发过的，不能凭空造。 */\n  function mapChronosItems(list) {\n    var out = [];\n    if (!Array.isArray(list)) return out;\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      if (!it.url || !it.sign) continue;\n      out.push({\n        id: 'ch' + (it.id || i),\n        name: 'Chronos 开屏' + (it.service_key ? ' · ' + it.service_key : '') + ' #' + (i + 1),\n        preview: '',\n        isChronos: true,\n        chronos: {\n          id: it.id,\n          service_key: it.service_key || '',\n          url: it.url,\n          md5: it.md5 || '',\n          sign: it.sign\n        }\n      });\n    }\n    return out;\n  }\n\n  /* Surge 侧嗅探到的开屏 -> 候选卡片。brand=品牌开屏，event=活动开屏。 */\n  function mapSplashItems(list) {\n    var out = [];\n    if (!Array.isArray(list)) return out;\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      if (!it.thumb) continue;\n      var kind = it.kind === 'event' ? 'event' : 'brand';\n      out.push({\n        id: 'sp' + kind + (it.id || i),\n        name: (kind === 'event' ? '活动开屏' : '开屏动画') + ' #' + (it.id || i + 1),\n        preview: it.thumb,\n        isSplash: true,\n        splash: {\n          kind: kind,\n          id: it.id,\n          thumb: it.thumb,\n          logo_url: it.logo_url || '',\n          duration: 3000\n        }\n      });\n    }\n    return out;\n  }\n\n  /* ===================== 全量目录（兜底用） ===================== */\n\n  /* 目录条目 -> 卡片数据。只有 id / 名字 / 封面，点开再去拉装扮包。 */\n  function mapSuit(it) {\n    it = it || {};\n    var p = it.properties || {};\n    var price = Number(p.sale_bp_forever_raw || 0) || 0;\n    return {\n      id: it.item_id,\n      name: it.name,\n      cover: p.image_cover || '',\n      preview: p.image_cover || p.image_preview || '',\n      cat: it.group_name || '',\n      paid: price > 0,\n      salePrice: price,\n      owner_uid: p.owner_uid || ''\n    };\n  }\n\n  /* 搜索响应：收藏集混在里面，只留装扮 */\n  function mapSearch(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) {\n      if (list[i].part_id === 6) out.push(mapSuit(list[i]));\n    }\n    return out;\n  }\n\n  /* 搜索响应里的收藏集（part_id=0）。用户搜的常常是收藏集名，\n     收藏集不是装扮，但它的「主题套装」上线后会变成装扮。 */\n  function mapCollectHits(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i];\n      if (it.part_id !== 0) continue;\n      var p = it.properties || {};\n      out.push({\n        id: it.item_id,\n        name: it.name,\n        upcoming: String(p.dlc_act_status) === '1',\n        startAt: Number(p.dlc_sale_start_time || 0)\n      });\n    }\n    return out;\n  }\n\n  function fmtTime(ts) {\n    if (!ts) return '';\n    var d = new Date(ts * 1000);\n    function p2(n) {\n      return (n < 10 ? '0' : '') + n;\n    }\n    return (\n      d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +\n      ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes())\n    );\n  }\n\n  function collectHint(hits, kw) {\n    var lines = [];\n    for (var i = 0; i < hits.length; i++) {\n      var h = hits[i];\n      lines.push(\n        '· ' +\n          h.name +\n          (h.upcoming && h.startAt ? '\\n    ' + fmtTime(h.startAt) + ' 开售' : '') +\n          (h.upcoming\n            ? '\\n    <span data-remind=\"' +\n              esc(h.id || h.name) +\n              '\" data-remind-name=\"' +\n              esc(h.name) +\n              '\" data-remind-at=\"' +\n              (h.startAt || 0) +\n              '\" style=\"color:' +\n              PINK +\n              '\">' +\n              esc(t('remind')) +\n              '</span>'\n            : '')\n      );\n    }\n    return emptyHtml(\n      '「' + kw + '」是收藏集，不是装扮。\\n收藏集的「主题套装」要等它上线后才会出现：\\n\\n' +\n        lines.join('\\n') +\n        '\\n\\n上线后再搜一次就能找到。'\n    );\n  }\n\n  function mapCatalogPage(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) out.push(mapSuit(list[i]));\n    return out;\n  }\n\n  /* ===================== 候选收集 ===================== */\n\n  async function collectCandidates() {\n    var stateHits = [];\n    try {\n      stateHits = scanState(window);\n    } catch (e) {}\n\n    var sniffed = [];\n    try {\n      var r = await bridgeSeen(enterTs);\n      sniffed = (r && r.data) || [];\n    } catch (e) {}\n\n    var merged = mergeById(sniffed, stateHits);\n\n    var ids = collectIds(document, location);\n\n    /* 收藏集页：奖励清单里的 id 也一并试（「动态主题套装」在这里）。\n       act_id 在 URL 上；lottery_id 可能没有，缺了拿不到数据，两个都试一遍。 */\n    var actId = param(location, 'act_id');\n    if (actId) {\n      var rawList = [];\n      try {\n        rawList.push(await apiLotteryDetail(actId, param(location, 'lottery_id')));\n      } catch (e) {}\n      try {\n        rawList.push(await apiCollectRewards(actId, param(location, 'lottery_id')));\n      } catch (e) {}\n      for (var r2 = 0; r2 < rawList.length; r2++) {\n        var extra = mapRedeemIds(rawList[r2]);\n        for (var n = 0; n < extra.length; n++) {\n          if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);\n        }\n      }\n    }\n\n    for (var i = 0; i < ids.length; i++) {\n      var dup = false;\n      for (var k = 0; k < merged.length; k++) {\n        if (String(merged[k].id) === ids[i]) {\n          dup = true;\n          break;\n        }\n      }\n      if (dup) continue;\n      try {\n        var e = toEquip(await apiSuitDetail(ids[i]));\n        if (e) merged.push(e);\n      } catch (err) {}\n    }\n\n    /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list 与 event/list2 */\n    try {\n      var sr = await bridgeSplashList();\n      var splashItems = mapSplashItems(sr && sr.data);\n      for (var s = 0; s < splashItems.length; s++) merged.push(splashItems[s]);\n    } catch (err2) {}\n\n    /* Chronos 开屏包候选：Surge 侧捕获的 {url,md5,sign}（只能回放，不能造） */\n    try {\n      var cr = await bridgeChronosList();\n      var chItems = mapChronosItems(cr && cr.data);\n      for (var c2 = 0; c2 < chItems.length; c2++) merged.push(chItems[c2]);\n    } catch (err3) {}\n\n    return merged;\n  }\n\n  /* 把当前登录 mid 交给 Surge，用于「只改自己的评论装扮」 */\n  function reportSelfMid() {\n    apiNav()\n      .then(function (r) {\n        var mid = r && r.data && r.data.mid;\n        if (mid) return bridgeSelfMid(mid);\n      })\n      .catch(function () {});\n  }\n\n  /* ===================== 应用 ===================== */\n\n  async function applyEquip(equip) {\n    /* Chronos 开屏包走单独的存储（回放服务端发过的三件套） */\n    if (equip && equip.isChronos) {\n      var cr = await bridgeChronosSet(equip.chronos);\n      if (!cr || cr.code !== 0) throw new Error((cr && cr.msg) || '保存失败');\n      return equip;\n    }\n    /* 开屏动画走单独的存储与注入点 */\n    if (equip && equip.isSplash) {\n      var sr = await bridgeSplashSet(equip.splash);\n      if (!sr || sr.code !== 0) throw new Error((sr && sr.msg) || '保存失败');\n      return equip;\n    }\n    try {\n      await bridgeGalleryAdd(equip);\n    } catch (e) {}\n    var r = await bridgeSet(equip);\n    if (!r || r.code !== 0) throw new Error((r && r.msg) || '保存失败');\n    return equip;\n  }\n\n  /* ===================== 提示 ===================== */\n\n  var toastEl = null;\n  function toast(msg, ok) {\n    if (toastEl) toastEl.remove();\n    toastEl = mk(\n      'div',\n      'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483002;' +\n        'max-width:76vw;padding:12px 18px;border-radius:12px;font-size:14px;line-height:1.5;' +\n        'color:#fff;text-align:center;white-space:pre-line;word-break:break-word;' +\n        'background:' + (ok ? 'rgba(0,0,0,.82)' : 'rgba(214,48,49,.92)') +\n        ';-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)',\n      esc(msg)\n    );\n    document.body.appendChild(toastEl);\n    setTimeout(function () {\n      if (toastEl) {\n        toastEl.remove();\n        toastEl = null;\n      }\n    }, 2400);\n  }\n\n  /* ===================== 卡片 ===================== */\n\n  function cardHtml(it) {\n    var badges = componentBadges(it);\n    var badgeHtml = badges.length\n      ? '<div style=\"position:absolute;left:6px;top:6px;display:flex;flex-wrap:wrap;gap:4px;' +\n        'max-width:90%\">' +\n        badges\n          .map(function (b) {\n            return (\n              '<span style=\"font-size:10px;line-height:16px;padding:0 6px;border-radius:8px;' +\n              'background:rgba(0,0,0,.55);color:#fff\">' +\n              esc(b) +\n              '</span>'\n            );\n          })\n          .join('') +\n        '</div>'\n      : '';\n    var note = it.note\n      ? '<div style=\"margin-top:2px;font-size:11px;color:#9499a0;overflow:hidden;' +\n        'text-overflow:ellipsis;white-space:nowrap\">' +\n        esc(it.note) +\n        '</div>'\n      : '';\n    return (\n      '<div data-id=\"' +\n      it.id +\n      '\" data-name=\"' +\n      esc(it.name || '') +\n      '\" data-detail=\"1\" style=\"background:#fff;border-radius:12px;overflow:hidden;' +\n      'box-shadow:0 1px 6px rgba(0,0,0,.07);cursor:pointer\">' +\n      '<div style=\"position:relative;width:100%;aspect-ratio:1/1;background:#f4f4f5;overflow:hidden\">' +\n      (it.preview\n        ? '<img src=\"' + esc(thumb(it.preview)) + '\" loading=\"lazy\" ' +\n          'style=\"display:block;width:100%;height:100%;object-fit:cover\">'\n        : '') +\n      badgeHtml +\n      '</div>' +\n      '<div style=\"padding:8px 10px 10px\">' +\n      '<div style=\"font-size:13px;line-height:1.35;color:#18191c;overflow:hidden;' +\n      'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:35px\">' +\n      esc(it.name) + '</div>' +\n      note +\n      '<div data-apply=\"' + it.id + '\" style=\"margin-top:8px;height:30px;line-height:30px;' +\n      'text-align:center;border-radius:15px;background:' + PINK + ';color:#fff;font-size:12px\">' +\n      t('apply') +\n      '</div>' +\n      '</div></div>'\n    );\n  }\n\n  /* 装扮详情：大图 + 组件清单 + 来源 / 价格。没有预览图时退化成纯文字。 */\n  function detailHtml(it) {\n    var rows = [];\n    if (it.components) {\n      for (var i = 0; i < COMPONENTS.length; i++) {\n        var k = COMPONENTS[i];\n        var c = it.components[k];\n        if (!c) continue;\n        rows.push(\n          '<div style=\"display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f4f4f5\">' +\n            '<div style=\"flex:none;width:84px;font-size:12px;color:#61666d\">' +\n            esc(COMPONENT_LABEL[k] || k) +\n            '</div>' +\n            '<div style=\"flex:1;min-width:0;font-size:12px;color:#18191c;word-break:break-all\">' +\n            esc(c.name || c.id || '-') +\n            '</div></div>'\n        );\n      }\n    }\n    var meta = [];\n    if (it.owner_uid) meta.push('UP ' + it.owner_uid);\n    if (it.salePrice) meta.push(t('price') + ' ' + it.salePrice);\n    else if (it.paid === false) meta.push(t('free'));\n\n    return (\n      (it.preview\n        ? '<div style=\"width:100%;aspect-ratio:1/1;background:#f4f4f5;border-radius:12px;' +\n          'overflow:hidden;margin-bottom:12px\"><img src=\"' + esc(it.preview) + '\" ' +\n          'style=\"display:block;width:100%;height:100%;object-fit:cover\"></div>'\n        : '') +\n      (rows.length\n        ? '<div style=\"margin-bottom:10px\">' +\n          '<div style=\"font-size:13px;color:#61666d;margin-bottom:2px\">' + t('components') + '</div>' +\n          rows.join('') +\n          '</div>'\n        : '') +\n      (meta.length\n        ? '<div style=\"font-size:12px;color:#9499a0\">' + esc(meta.join(' · ')) + '</div>'\n        : '')\n    );\n  }\n\n  function openDetail(it) {\n    openSheet(it.name || t('detail'), t('detail'), [], detailHtml(it));\n    var body = panel.querySelector('#bss-body');\n    var btn = mk(\n      'div',\n      'margin-top:16px;height:38px;line-height:38px;text-align:center;border-radius:19px;' +\n        'background:' + PINK + ';color:#fff;font-size:14px',\n      t('apply')\n    );\n    btn.addEventListener('click', function () {\n      closePanel();\n      doApply(it);\n    });\n    body.appendChild(btn);\n  }\n\n  /* ===================== 面板 ===================== */\n\n  var panel = null;\n\n  function closePanel() {\n    if (panel) {\n      panel.remove();\n      panel = null;\n    }\n  }\n\n  /* 通用底部面板：标题 + 副标题 + 网格 + 右上角动作 */\n  function openSheet(title, subtitle, actions, bodyHtml) {\n    closePanel();\n\n    panel = mk(\n      'div',\n      'position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.5);' +\n        'display:flex;align-items:flex-end'\n    );\n\n    var sheet = mk(\n      'div',\n      'width:100%;max-height:82vh;background:#fff;border-radius:16px 16px 0 0;' +\n        'display:flex;flex-direction:column;overflow:hidden;' +\n        'font-family:-apple-system,system-ui,sans-serif'\n    );\n\n    var actionHtml = (actions || [])\n      .map(function (a) {\n        return (\n          '<span data-act=\"' + esc(a.key) + '\" style=\"font-size:12px;color:' +\n          (a.pink ? PINK : '#9499a0') + ';margin-left:14px\">' + esc(a.label) + '</span>'\n        );\n      })\n      .join('');\n\n    sheet.innerHTML =\n      '<div style=\"flex:none;padding:16px 16px 10px\">' +\n      '<div style=\"display:flex;align-items:flex-start;justify-content:space-between\">' +\n      '<div style=\"flex:1;min-width:0\">' +\n      '<div style=\"font-size:16px;font-weight:600;color:#18191c\">' + esc(title) + '</div>' +\n      (subtitle\n        ? '<div style=\"margin-top:4px;font-size:12px;color:#9499a0\">' + esc(subtitle) + '</div>'\n        : '') +\n      '</div>' +\n      '<div style=\"flex:none;padding-left:10px\">' + actionHtml +\n      '<span data-act=\"close\" style=\"font-size:20px;color:#9499a0;margin-left:14px;' +\n      'line-height:1\">&times;</span></div>' +\n      '</div></div>' +\n      '<div id=\"bss-body\" style=\"flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;' +\n      'padding:0 16px calc(env(safe-area-inset-bottom,0px) + 20px)\">' + bodyHtml + '</div>';\n\n    panel.appendChild(sheet);\n    panel.addEventListener('click', function (e) {\n      if (e.target === panel) closePanel();\n    });\n    document.body.appendChild(panel);\n    return sheet;\n  }\n\n  function gridHtml(list) {\n    return (\n      '<div style=\"display:grid;grid-template-columns:repeat(2,1fr);gap:12px\">' +\n      list.map(cardHtml).join('') +\n      '</div>'\n    );\n  }\n\n  function emptyHtml(text) {\n    return (\n      '<div style=\"padding:44px 0;text-align:center;color:#9499a0;font-size:13px;' +\n      'line-height:1.8;white-space:pre-line\">' + esc(text) + '</div>'\n    );\n  }\n\n  /* 选中列表：1 个直接应用，多个弹选择 */\n  async function runApply() {\n    if (!launcher) return;\n    launcher.textContent = t('scanning');\n    launcher.style.opacity = '.7';\n\n    var list;\n    try {\n      list = await collectCandidates();\n    } catch (e) {\n      list = [];\n    }\n\n    launcher.textContent = t('apply');\n    launcher.style.opacity = '1';\n\n    if (list.length === 0) return showEmpty();\n    if (list.length === 1) return doApply(list[0]);\n\n    openSheet(\n      t('pick'),\n      t('pickSub', { n: list.length }),\n      [],\n      gridHtml(list)\n    );\n    bindGridActions(panel.querySelector('#bss-body'), list);\n  }\n\n  /* 自动扫描：设置里开了之后，进页面若有唯一候选就直接注入，不打扰。 */\n  var autoScanned = '';\n  async function autoScanOnce() {\n    if (!prefs.autoScan) return;\n    var key = location.pathname + location.search;\n    if (key === autoScanned) return;\n    autoScanned = key;\n    var list;\n    try {\n      list = await collectCandidates();\n    } catch (e) {\n      return;\n    }\n    if (list.length === 1) doApply(list[0]);\n  }\n\n  function bindGridActions(root, list) {\n    if (!root) return;\n    root.addEventListener('click', function (e) {\n      var ap = e.target.closest && e.target.closest('[data-apply]');\n      var card = e.target.closest && e.target.closest('[data-id]');\n      if (!card) return;\n      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');\n      var hit = null;\n      for (var i = 0; i < list.length; i++) {\n        if (String(list[i].id) === String(id)) {\n          hit = list[i];\n          break;\n        }\n      }\n      if (!hit) return;\n      /* 点「应用」直接注入；点卡片看详情 */\n      if (ap) {\n        closePanel();\n        doApply(hit);\n        return;\n      }\n      if (card.getAttribute('data-detail')) {\n        openDetail(hit);\n        return;\n      }\n      closePanel();\n      doApply(hit);\n    });\n  }\n\n  async function doApply(equip) {\n    if (launcher) launcher.textContent = t('applying');\n    try {\n      await applyEquip(equip);\n      if (launcher) launcher.textContent = t('applied');\n      var extra = componentBadges(equip);\n      toast(\n        '已注入「' + equip.name + '」' +\n          (extra.length ? '\\n含 ' + extra.join(' / ') : '') +\n          '\\n杀掉后台重进 B 站即可生效',\n        true\n      );\n    } catch (e) {\n      toast('失败：' + e.message);\n    }\n    setTimeout(function () {\n      if (launcher) launcher.textContent = t('apply');\n    }, 2600);\n  }\n\n  /* 本页没找到：给「浏览全部」兜底 + 藏馆里之前用过的 + 设置入口 */\n  async function showEmpty() {\n    var cur = null;\n    var gal = [];\n    var equips = {};\n    var rems = [];\n    try {\n      var g = await bridgeGet();\n      cur = g && g.data;\n    } catch (e) {}\n    try {\n      var r = await bridgeGallery();\n      gal = (r && r.data) || [];\n    } catch (e) {}\n    try {\n      var eq = await bridgeEquips();\n      equips = (eq && eq.data) || {};\n    } catch (e) {}\n    try {\n      var rm = await bridgeReminders();\n      rems = (rm && rm.data) || [];\n    } catch (e) {}\n\n    var acts = [\n      { key: 'browse', label: t('browse'), pink: true },\n      { key: 'settings', label: t('settings') }\n    ];\n    if (cur && cur.name) acts.push({ key: 'clear', label: t('clear') });\n\n    var isCard = /digital-card/.test(location.pathname || '');\n    var tip = isCard ? t('emptyCard') : t('empty');\n\n    var galList = groupGallery(gal, equips);\n\n    var body = emptyHtml(tip);\n\n    if (rems.length) {\n      body +=\n        '<div style=\"margin:2px 0 10px;font-size:13px;color:#61666d\">' +\n        esc(t('remind')) +\n        '</div>' +\n        rems\n          .map(function (x) {\n            return (\n              '<div style=\"padding:8px 0;font-size:13px;color:#18191c\">' +\n              esc(x.name) +\n              (x.startAt ? ' · ' + esc(fmtTime(x.startAt)) : '') +\n              '</div>'\n            );\n          })\n          .join('');\n    }\n\n    if (galList.length) {\n      body +=\n        '<div style=\"margin:2px 0 10px;font-size:13px;color:#61666d\">' +\n        esc(t('gallery')) +\n        '</div>' +\n        gridHtml(galList);\n    }\n\n    openSheet(t('apply'), cur && cur.name ? '当前：' + cur.name : '', acts, body);\n    bindGridActions(panel.querySelector('#bss-body'), galList);\n\n    var browseBtn = panel.querySelector('[data-act=\"browse\"]');\n    if (browseBtn) {\n      browseBtn.addEventListener('click', function () {\n        openBrowse();\n      });\n    }\n\n    var setBtn = panel.querySelector('[data-act=\"settings\"]');\n    if (setBtn) {\n      setBtn.addEventListener('click', function () {\n        openSettings();\n      });\n    }\n\n    var clearBtn = panel.querySelector('[data-act=\"clear\"]');\n    if (clearBtn) {\n      clearBtn.addEventListener('click', async function () {\n        await bridgeClear();\n        closePanel();\n        toast('已清除注入的装扮', true);\n      });\n    }\n  }\n\n  /* 兜底：全站装扮目录（约 3400 套）。\n     搜索走服务端；分类用已加载条目的 group_name 做前端筛选；\n     排序走 sort_type；还能直接输 ID。 */\n  async function openBrowse() {\n    openSheet(\n      t('all'),\n      t('allSub'),\n      [{ key: 'byid', label: t('byId') }],\n      '<input id=\"bss-q\" placeholder=\"' + esc(t('search')) + '\" ' +\n        'style=\"width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +\n        'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none\">' +\n        '<div id=\"bss-tools\" style=\"margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;' +\n        'align-items:center;font-size:12px\"></div>' +\n        '<div id=\"bss-cats\" style=\"margin-top:8px;display:flex;flex-wrap:wrap;gap:6px\"></div>' +\n        '<div id=\"bss-grid\" style=\"margin-top:12px\"></div>' +\n        '<div id=\"bss-more\" style=\"padding:18px 0;text-align:center;font-size:12px;' +\n        'color:#9499a0\"></div>'\n    );\n\n    var body = panel.querySelector('#bss-body');\n    var qEl = body.querySelector('#bss-q');\n    var toolsEl = body.querySelector('#bss-tools');\n    var catsEl = body.querySelector('#bss-cats');\n    var gridEl = body.querySelector('#bss-grid');\n    var moreEl = body.querySelector('#bss-more');\n\n    var st = {\n      pn: 0,\n      done: false,\n      loading: false,\n      kw: '',\n      timer: 0,\n      sort: 2,\n      cat: '',\n      all: [],\n      shown: []\n    };\n\n    function chip(label, active, onTap) {\n      var el = mk(\n        'span',\n        'padding:3px 10px;border-radius:12px;cursor:pointer;' +\n          'background:' + (active ? PINK : '#f4f4f5') + ';' +\n          'color:' + (active ? '#fff' : '#61666d'),\n        esc(label)\n      );\n      el.addEventListener('click', onTap);\n      return el;\n    }\n\n    function renderTools() {\n      toolsEl.innerHTML = '';\n      toolsEl.appendChild(chip(t('sortNew'), st.sort === 2, function () {\n        st.sort = 2;\n        reset();\n      }));\n      toolsEl.appendChild(chip(t('sortHot'), st.sort === 1, function () {\n        st.sort = 1;\n        reset();\n      }));\n      var idWrap = mk('span', 'display:inline-flex;gap:6px;align-items:center');\n      idWrap.innerHTML =\n        '<input id=\"bss-id\" placeholder=\"' + esc(t('idPlaceholder')) + '\" ' +\n        'style=\"width:96px;height:26px;padding:0 10px;border:none;border-radius:13px;' +\n        'background:#f4f4f5;font-size:12px;outline:none\">' +\n        '<span id=\"bss-idgo\" style=\"color:' + PINK + ';cursor:pointer\">' + esc(t('go')) + '</span>';\n      toolsEl.appendChild(idWrap);\n      var idEl = toolsEl.querySelector('#bss-id');\n      var goEl = toolsEl.querySelector('#bss-idgo');\n      goEl.addEventListener('click', function () {\n        var v = (idEl.value || '').replace(/\\D/g, '');\n        if (v) {\n          closePanel();\n          applyById(v);\n        }\n      });\n    }\n\n    function renderCats() {\n      catsEl.innerHTML = '';\n      var names = [];\n      var seen = {};\n      for (var i = 0; i < st.all.length; i++) {\n        var g = st.all[i].cat;\n        if (g && !seen[g]) {\n          seen[g] = 1;\n          names.push(g);\n        }\n      }\n      if (!names.length) return;\n      catsEl.appendChild(chip('全部', !st.cat, function () {\n        st.cat = '';\n        applyFilter();\n      }));\n      for (var j = 0; j < names.length && j < 12; j++) {\n        (function (name) {\n          catsEl.appendChild(chip(name, st.cat === name, function () {\n            st.cat = name;\n            applyFilter();\n          }));\n        })(names[j]);\n      }\n    }\n\n    function applyFilter() {\n      var list = st.all;\n      if (st.cat) {\n        list = list.filter(function (x) {\n          return x.cat === st.cat;\n        });\n      }\n      st.shown = list;\n      gridEl.innerHTML = list.length ? gridHtml(list) : emptyHtml('没有匹配的装扮');\n      renderCats();\n    }\n\n    function reset() {\n      st.pn = 0;\n      st.done = false;\n      st.all = [];\n      st.cat = '';\n      gridEl.innerHTML = '';\n      moreEl.textContent = '';\n      renderTools();\n      renderCats();\n      loadMore();\n    }\n\n    function loadMore() {\n      if (st.loading || st.done || st.kw) return;\n      st.loading = true;\n      moreEl.textContent = t('loading');\n      var pn = st.pn + 1;\n      apiCatalogPage(pn, 6, st.sort)\n        .then(function (raw) {\n          var list = mapCatalogPage(raw);\n          if (!list.length) {\n            st.done = true;\n            moreEl.textContent = t('noMore');\n          } else {\n            st.pn = pn;\n            for (var i = 0; i < list.length; i++) st.all.push(list[i]);\n            applyFilter();\n            moreEl.textContent = '';\n          }\n        })\n        .catch(function (e) {\n          moreEl.textContent = '加载失败：' + e.message;\n        })\n        .then(function () {\n          st.loading = false;\n        });\n    }\n\n    function doSearch(kw) {\n      if (!kw) {\n        reset();\n        return;\n      }\n      moreEl.textContent = t('loading');\n      apiSearch(kw)\n        .then(function (raw) {\n          var list = mapSearch(raw);\n          if (list.length) {\n            st.all = list;\n            st.cat = '';\n            applyFilter();\n            moreEl.textContent = '';\n          } else {\n            var hits = mapCollectHits(raw);\n            gridEl.innerHTML = hits.length\n              ? collectHint(hits, kw)\n              : emptyHtml('没搜到「' + kw + '」\\n换个关键词试试');\n            catsEl.innerHTML = '';\n            moreEl.textContent = '';\n          }\n        })\n        .catch(function (e) {\n          moreEl.textContent = '搜索失败：' + e.message;\n        });\n    }\n\n    qEl.addEventListener('input', function () {\n      st.kw = qEl.value.trim();\n      clearTimeout(st.timer);\n      st.timer = setTimeout(function () {\n        doSearch(st.kw);\n      }, 400);\n    });\n\n    /* 触底加载更多 */\n    body.addEventListener('scroll', function () {\n      if (st.kw || st.loading || st.done) return;\n      if (body.scrollTop + body.clientHeight >= body.scrollHeight - 400) loadMore();\n    });\n\n    /* 目录条目只有 id / 名字 / 封面，点了再去拉装扮包 */\n    gridEl.addEventListener('click', function (e) {\n      var rem = e.target.closest && e.target.closest('[data-remind]');\n      if (rem) {\n        bridgeReminderAdd({\n          id: rem.getAttribute('data-remind'),\n          name: rem.getAttribute('data-remind-name'),\n          startAt: Number(rem.getAttribute('data-remind-at')) || 0\n        }).then(function () {\n          toast(t('remindAdded'), true);\n        });\n        return;\n      }\n      var ap = e.target.closest && e.target.closest('[data-apply]');\n      var card = e.target.closest && e.target.closest('[data-id]');\n      if (!card) return;\n      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');\n      if (ap) {\n        closePanel();\n        applyById(id);\n        return;\n      }\n      /* 目录里只有封面，没有组件；点开就先拉详情再展示 */\n      openCatalogDetail(id, card.getAttribute('data-name') || '');\n    });\n\n    renderTools();\n    loadMore();\n  }\n\n  /* 目录条目点开：先拉详情，再弹详情面板 */\n  async function openCatalogDetail(id, name) {\n    toast(t('loading'));\n    var equip = null;\n    try {\n      equip = toEquip(await apiSuitDetail(id));\n    } catch (e) {}\n    if (!equip) {\n      toast('这套装扮拿不到装扮包');\n      return;\n    }\n    if (name && !equip.name) equip.name = name;\n    openDetail(equip);\n  }\n\n  async function applyById(id) {\n    try {\n      var equip = toEquip(await apiSuitDetail(id));\n      if (!equip) throw new Error('这套装扮拿不到装扮包');\n      await doApply(equip);\n    } catch (e) {\n      if (launcher) launcher.textContent = '应用装扮';\n      toast('失败：' + e.message);\n    }\n  }\n\n  /* ===================== 设置 / 导出导入 ===================== */\n\n  /* 设置面板：开关 + 导出/导入 + 诊断 */\n  async function openSettings() {\n    var diag = null;\n    try {\n      var d = await bridgeDiag();\n      diag = d && d.data;\n    } catch (e) {}\n\n    function toggleRow(key, label) {\n      return (\n        '<div data-toggle=\"' + key + '\" style=\"display:flex;align-items:center;' +\n        'justify-content:space-between;padding:12px 0;border-bottom:1px solid #f4f4f5;' +\n        'font-size:14px;color:#18191c;cursor:pointer\">' +\n        '<span>' + esc(label) + '</span>' +\n        '<span style=\"font-size:12px;color:' + (prefs[key] ? PINK : '#9499a0') + '\">' +\n        (prefs[key] ? '开' : '关') + '</span></div>'\n      );\n    }\n\n    var diagHtml = diag\n      ? '<div style=\"margin-top:14px;padding:12px;border-radius:10px;background:#f4f4f5;' +\n        'font-size:12px;line-height:1.9;color:#61666d;white-space:pre-line\">' +\n        esc(\n          t('diag') + '\\n' +\n            '当前装扮: ' + (diag.equip ? diag.equip.name + ' (#' + diag.equip.id + ')' : '无') + '\\n' +\n            '组件: ' + (diag.equip && diag.equip.components.length ? diag.equip.components.join('/') : '—') + '\\n' +\n            '主题/加载动画: ' + (diag.equip ? (diag.equip.hasSkin ? '有' : '无') + ' / ' + (diag.equip.hasLoading ? '有' : '无') : '—') + '\\n' +\n            '我的 mid: ' + (diag.selfMid || '未知') + '\\n' +\n            '本页嗅探: ' + diag.seen + ' 条\\n' +\n            '藏馆: ' + diag.gallery + ' 套\\n' +\n            'Chronos 候选: ' + diag.chronos\n        ) +\n        '</div>'\n      : '';\n\n    openSheet(\n      t('settings'),\n      '',\n      [{ key: 'export', label: t('export'), pink: true }, { key: 'import', label: t('import') }],\n      toggleRow('allMembers', '评论装扮改所有人（默认只改自己）') +\n        toggleRow('notify', '应用成功发系统通知') +\n        toggleRow('autoScan', '进页面自动扫描') +\n        toggleRow('grpcAll', 'gRPC 兜底：换掉所有 garb 图') +\n        '<div data-toggle=\"lang\" style=\"display:flex;align-items:center;justify-content:space-between;' +\n        'padding:12px 0;border-bottom:1px solid #f4f4f5;font-size:14px;color:#18191c;cursor:pointer\">' +\n        '<span>语言 / Language</span><span style=\"font-size:12px;color:' + PINK + '\">' +\n        (prefs.lang === 'en' ? 'EN' : '中文') +\n        '</span></div>' +\n        diagHtml\n    );\n\n    var body = panel.querySelector('#bss-body');\n    body.addEventListener('click', async function (e) {\n      var row = e.target.closest && e.target.closest('[data-toggle]');\n      if (!row) return;\n      var key = row.getAttribute('data-toggle');\n      if (key === 'lang') {\n        await savePrefs({ lang: prefs.lang === 'en' ? 'zh' : 'en' });\n        openSettings();\n        return;\n      }\n      var patch = {};\n      patch[key] = !prefs[key];\n      await savePrefs(patch);\n      openSettings();\n    });\n\n    var expBtn = panel.querySelector('[data-act=\"export\"]');\n    if (expBtn) expBtn.addEventListener('click', openExport);\n    var impBtn = panel.querySelector('[data-act=\"import\"]');\n    if (impBtn) impBtn.addEventListener('click', openImport);\n  }\n\n  /* 导出：把整份配置吐成文本，方便换设备 */\n  async function openExport() {\n    var txt = '';\n    try {\n      var r = await bridgeExport();\n      txt = JSON.stringify(r && r.data);\n    } catch (e) {\n      txt = '导出失败：' + e.message;\n    }\n    openSheet(\n      t('export'),\n      t('copyHint'),\n      [],\n      '<textarea id=\"bss-exp\" readonly style=\"width:100%;box-sizing:border-box;height:220px;' +\n        'padding:12px;border:none;border-radius:10px;background:#f4f4f5;font-size:11px;' +\n        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none\">' +\n        esc(txt) +\n        '</textarea>' +\n        '<div id=\"bss-copy\" style=\"margin-top:12px;height:38px;line-height:38px;text-align:center;' +\n        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px\">' +\n        esc(t('copied')) +\n        '</div>'\n    );\n    var el = panel.querySelector('#bss-exp');\n    var cp = panel.querySelector('#bss-copy');\n    if (cp) {\n      cp.addEventListener('click', function () {\n        if (el) {\n          el.select();\n          try {\n            document.execCommand('copy');\n          } catch (e) {}\n        }\n        toast(t('copied'), true);\n      });\n    }\n  }\n\n  /* 导入：粘一段之前导出的内容 */\n  function openImport() {\n    openSheet(\n      t('import'),\n      t('importHint'),\n      [],\n      '<textarea id=\"bss-imp\" placeholder=\"' +\n        esc(t('importHint')) +\n        '\" style=\"width:100%;box-sizing:border-box;height:220px;padding:12px;border:none;' +\n        'border-radius:10px;background:#f4f4f5;font-size:11px;' +\n        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none\"></textarea>' +\n        '<div id=\"bss-doimp\" style=\"margin-top:12px;height:38px;line-height:38px;text-align:center;' +\n        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px\">' +\n        esc(t('doImport')) +\n        '</div>'\n    );\n    var el = panel.querySelector('#bss-imp');\n    var btn = panel.querySelector('#bss-doimp');\n    if (btn) {\n      btn.addEventListener('click', async function () {\n        var raw = el ? el.value.trim() : '';\n        if (!raw) return;\n        var obj;\n        try {\n          obj = JSON.parse(raw);\n        } catch (e) {\n          toast('不是合法的导出内容');\n          return;\n        }\n        try {\n          var r = await bridgeImport(obj);\n          if (r && r.code === 0) {\n            toast('已导入 ' + ((r.data && r.data.sections) || 0) + ' 段配置\\n杀后台重进生效', true);\n            closePanel();\n          } else {\n            toast('导入失败：' + ((r && r.msg) || '未知'));\n          }\n        } catch (e) {\n          toast('导入失败：' + e.message);\n        }\n      });\n    }\n  }\n\n  /* 藏馆按账号分组 */\n  function groupGallery(gal, equips) {\n    var map = {};\n    var mids = equips && typeof equips === 'object' ? Object.keys(equips) : [];\n    for (var i = 0; i < mids.length; i++) {\n      var mid = mids[i];\n      var e = equips[mid];\n      if (e && e.id) map[String(e.id)] = mid;\n    }\n    var out = [];\n    for (var j = 0; j < gal.length; j++) {\n      var it = gal[j];\n      it.mid = map[String(it.id)] || '';\n      out.push(it);\n    }\n    return out;\n  }\n\n  /* ===================== 悬浮按钮（可拖动） ===================== */\n\n  var launcher = null;\n\n  function mountLauncher() {\n    if (launcher) return;\n    var saved = null;\n    try {\n      saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');\n    } catch (e) {}\n\n    var pos =\n      saved && saved.left != null\n        ? 'left:' + saved.left + 'px;top:' + saved.top + 'px;'\n        : 'left:56px;top:calc(env(safe-area-inset-top,0px) + 8px);';\n\n    launcher = mk(\n      'div',\n      'position:fixed;z-index:2147483000;' + pos +\n        'padding:7px 14px;border-radius:20px;background:' + PINK + ';color:#fff;' +\n        'font-size:12px;font-weight:500;font-family:-apple-system,system-ui,sans-serif;' +\n        'box-shadow:0 4px 16px rgba(251,114,153,.45);cursor:pointer;white-space:nowrap;' +\n        'user-select:none;-webkit-user-select:none;touch-action:none;' +\n        '-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)',\n      t('apply')\n    );\n\n    var sx = 0, sy = 0, ox = 0, oy = 0, moved = false, dragging = false;\n\n    function down(e) {\n      var t = e.touches ? e.touches[0] : e;\n      var r = launcher.getBoundingClientRect();\n      dragging = true;\n      moved = false;\n      sx = t.clientX;\n      sy = t.clientY;\n      ox = r.left;\n      oy = r.top;\n      launcher.style.left = ox + 'px';\n      launcher.style.top = oy + 'px';\n    }\n    function move(e) {\n      if (!dragging) return;\n      var t = e.touches ? e.touches[0] : e;\n      var dx = t.clientX - sx;\n      var dy = t.clientY - sy;\n      if (!moved && Math.abs(dx) < 5 && Math.abs(dy) < 5) return;\n      moved = true;\n      if (e.cancelable) e.preventDefault();\n      var w = launcher.offsetWidth;\n      var h = launcher.offsetHeight;\n      launcher.style.left = Math.min(Math.max(ox + dx, 4), window.innerWidth - w - 4) + 'px';\n      launcher.style.top = Math.min(Math.max(oy + dy, 4), window.innerHeight - h - 4) + 'px';\n    }\n    function up() {\n      if (!dragging) return;\n      dragging = false;\n      if (moved) {\n        var r = launcher.getBoundingClientRect();\n        try {\n          localStorage.setItem(\n            POS_KEY,\n            JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) })\n          );\n        } catch (e) {}\n      } else {\n        runApply();\n      }\n    }\n\n    launcher.addEventListener('touchstart', down, { passive: true });\n    launcher.addEventListener('touchmove', move, { passive: false });\n    launcher.addEventListener('touchend', up);\n    launcher.addEventListener('mousedown', down);\n    document.addEventListener('mousemove', move);\n    document.addEventListener('mouseup', up);\n\n    document.body.appendChild(launcher);\n  }\n\n  /* ===================== 路由 ===================== */\n\n  var lastPath = '';\n\n  function markEnter() {\n    enterTs = Date.now();\n  }\n\n  /* 按钮该出现的页面：\n     - /h5/mall/*                装扮商城、详情页、收藏集\n     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页）\n     - /garb/collection-hall/*   收藏集大厅\n     注意 /h5/garb/draw-card 这类抽卡页不放按钮——那里没有装扮包数据。 */\n  function isTargetPage(p) {\n    return (\n      /h5\\/mall/.test(p) ||\n      /blackboard\\/fe\\/suit-preview\\.html/.test(p) ||\n      /garb\\/collection-hall/.test(p)\n    );\n  }\n\n  function route() {\n    var p = (location.pathname || '') + (location.hash || '');\n    if (!isTargetPage(p)) {\n      if (launcher) {\n        launcher.remove();\n        launcher = null;\n      }\n      lastPath = '';\n      return;\n    }\n    var key = location.pathname + location.search + location.hash;\n    if (key === lastPath) return;\n    lastPath = key;\n    closePanel();\n    mountLauncher();\n    setTimeout(autoScanOnce, 300);\n  }\n\n  ['pushState', 'replaceState'].forEach(function (m) {\n    var orig = history[m];\n    if (typeof orig !== 'function') return;\n    history[m] = function () {\n      markEnter();\n      var r = orig.apply(this, arguments);\n      setTimeout(route, 0);\n      return r;\n    };\n  });\n  window.addEventListener('popstate', function () {\n    markEnter();\n    setTimeout(route, 0);\n  });\n  window.addEventListener('hashchange', function () {\n    markEnter();\n    setTimeout(route, 0);\n  });\n  setInterval(route, 800);\n\n  /* 先把设置拉下来（语言等），再决定按钮和路由 */\n  loadPrefs().then(function () {\n    if (document.body) route();\n    else document.addEventListener('DOMContentLoaded', route);\n  });\n\n  reportSelfMid();\n\n  /* 测试钩子 */\n  window.__BSS_API__ = {\n    COMPONENTS: COMPONENTS,\n    COMPONENT_LABEL: COMPONENT_LABEL,\n    idFrom: idFrom,\n    param: param,\n    thumb: thumb,\n    isTargetPage: isTargetPage,\n    mapRedeemIds: mapRedeemIds,\n    mapRedeemItems: mapRedeemItems,\n    collectInfos: collectInfos,\n    mapSuit: mapSuit,\n    mapSearch: mapSearch,\n    mapCollectHits: mapCollectHits,\n    fmtTime: fmtTime,\n    collectHint: collectHint,\n    mapCatalogPage: mapCatalogPage,\n    equipFrom: equipFrom,\n    toEquip: toEquip,\n    harvest: harvest,\n    scanState: scanState,\n    collectIds: collectIds,\n    mergeById: mergeById,\n    componentOf: componentOf,\n    componentBadges: componentBadges,\n    mapSplashItems: mapSplashItems,\n    mapChronosItems: mapChronosItems,\n    detailHtml: detailHtml,\n    groupGallery: groupGallery,\n    LANGS: LANGS,\n    skinData: skinData,\n    cardHtml: cardHtml,\n    enterTs: function () {\n      return enterTs;\n    },\n    markEnter: markEnter\n  };\n})();\n";
+var H5_PAYLOAD = "/*\n * 哔哩哔哩装扮工作室 —— 注入到 www.bilibili.com/h5/mall/* 的页面脚本\n *\n * 按钮只有一个：「应用装扮」。点它就去**扫描当前页面**上出现的装扮，而不是翻全站目录。\n * 候选来自五个地方，按可靠性排序：\n *   1. Surge 嗅探到的接口响应（本页加载过的 x/garb/* x/vas/* 里含装扮包的条目）\n *   2. 页面 JS 状态（__INITIAL_MIRROR__ / __INITIAL_STATE__ 等）里递归找出的装扮对象\n *   3. DOM 里指向装扮详情页的链接\n *   4. 当前 URL 的参数\n *   5. 收藏集/抽奖页：collect_infos 里的兑换物 id，以及主题套装预览链接\n *\n * 一套「装扮套装」（suit）不只有主题皮肤。suit_items 里可能有：\n *   skin（个性主题）loading（加载动画）card（动态卡片）card_bg（评论装扮）\n *   thumbup（点赞特效）play_icon（进度条）space_bg（空间海报）emoji_package（表情包）\n * 全部一起抓，写进 equip.components，Surge 侧按类型分别注入到对应接口。\n *\n * 拿到候选后：1 个直接应用，多个弹选择列表，0 个给空状态（可清除注入 / 从藏馆里挑）。\n *\n * 与 Surge 的通信走 https://app.bilibili.com/x/surge-skin/ （由 Surge 假响应接管）\n */\n(function () {\n  'use strict';\n  if (window.__BSS_LOADED__) return;\n  window.__BSS_LOADED__ = true;\n\n  var BRIDGE = 'https://app.bilibili.com/x/surge-skin/';\n  var API = 'https://api.bilibili.com';\n  var PINK = '#fb7299';\n  var THUMB = '@360w_360h_1c.webp';\n  var POS_KEY = 'bss_btn_pos';\n  var MAX_RESOLVE = 8;\n\n  /* suit_items 里的全部组件类型。顺序即展示顺序。\n     ⚠️ pendant（头像挂件）**不在** suit_items 里 —— 实测 60 套在售装扮的\n     suit_items 只有下面 8 个键。挂件是独立资产，只在收藏集兑换物\n     （redeem_item_type_name = \"头像挂件\"）和已拥有资产列表里出现，\n     由 Surge 侧抓成「只有 pendant 一个组件」的候选。 */\n  var COMPONENTS = [\n    'skin',\n    'loading',\n    'card',\n    'card_bg',\n    'pendant',\n    'thumbup',\n    'play_icon',\n    'space_bg',\n    'emoji_package'\n  ];\n\n  /* 组件中文名，用于卡片上的小标签 */\n  var COMPONENT_LABEL = {\n    skin: '主题',\n    loading: '加载动画',\n    card: '动态卡片',\n    card_bg: '评论装扮',\n    pendant: '头像挂件',\n    thumbup: '点赞特效',\n    play_icon: '进度条',\n    space_bg: '空间海报',\n    emoji_package: '表情包'\n  };\n\n  /* 面板文案。加语言就在这里加一份。 */\n  var LANGS = {\n    zh: {\n      apply: '应用装扮',\n      scanning: '扫描中…',\n      applying: '注入中…',\n      applied: '已应用',\n      pick: '选择要应用的装扮',\n      pickSub: '本页找到 {n} 套，点「应用」生效',\n      detail: '装扮详情',\n      components: '组件',\n      source: '来源',\n      price: '价格',\n      free: '免费',\n      browse: '浏览全部装扮',\n      clear: '清除注入',\n      search: '搜索装扮名，例如「灵魂潮汐」',\n      all: '全部装扮',\n      allSub: '搜名字，或往下翻看全部',\n      category: '分类',\n      sort: '排序',\n      sortNew: '最新',\n      sortHot: '最热',\n      byId: '按 ID 找',\n      idPlaceholder: '输入装扮 ID',\n      go: '查找',\n      loading: '加载中…',\n      noMore: '没有更多了',\n      empty: '本页没找到可用的装扮。\\n点「浏览全部装扮」按名字或 ID 找。',\n      emptyCard: '收藏集页面本身不带装扮数据。\\n点「浏览全部装扮」按名字找，\\n或进收藏集的「主题套装」页再点按钮。',\n      gallery: '藏馆 · 之前应用过的',\n      settings: '设置',\n      export: '导出配置',\n      import: '导入配置',\n      copyHint: '复制下面这段，换设备时粘到「导入配置」里',\n      importHint: '把之前导出的内容粘进来',\n      doImport: '导入',\n      copied: '已复制',\n      diag: '诊断',\n      saved: '已保存',\n      remind: '开售提醒',\n      remindAdded: '已加提醒',\n      removed: '已移除',\n      account: '账号',\n      note: '备注',\n      noteHint: '给这套装扮起个名字'\n    },\n    en: {\n      apply: 'Apply skin',\n      scanning: 'Scanning…',\n      applying: 'Injecting…',\n      applied: 'Applied',\n      pick: 'Pick a skin',\n      pickSub: '{n} found on this page — tap Apply',\n      detail: 'Skin detail',\n      components: 'Components',\n      source: 'Source',\n      price: 'Price',\n      free: 'Free',\n      browse: 'Browse all',\n      clear: 'Clear injection',\n      search: 'Search by name, e.g. \"灵魂潮汐\"',\n      all: 'All skins',\n      allSub: 'Search or scroll',\n      category: 'Category',\n      sort: 'Sort',\n      sortNew: 'Newest',\n      sortHot: 'Hottest',\n      byId: 'By ID',\n      idPlaceholder: 'Enter skin ID',\n      go: 'Go',\n      loading: 'Loading…',\n      noMore: 'No more',\n      empty: 'No skin found on this page.\\nTap \"Browse all\" to search by name or ID.',\n      emptyCard: 'Collection pages carry no skin data.\\nTap \"Browse all\",\\nor open the collection\\'s theme-suit page.',\n      gallery: 'Vault · previously applied',\n      settings: 'Settings',\n      export: 'Export',\n      import: 'Import',\n      copyHint: 'Copy this; paste into Import on another device',\n      importHint: 'Paste exported content here',\n      doImport: 'Import',\n      copied: 'Copied',\n      diag: 'Diagnostics',\n      saved: 'Saved',\n      remind: 'Remind me',\n      remindAdded: 'Reminder added',\n      removed: 'Removed',\n      account: 'Account',\n      note: 'Note',\n      noteHint: 'Name this skin'\n    }\n  };\n\n  var prefs = {\n    allMembers: false,\n    notify: true,\n    autoScan: false,\n    lang: 'zh',\n    splashKeepVideo: false,\n    splashScratch: -1,\n    grpcAll: false\n  };\n\n  function t(key, vars) {\n    var L = LANGS[prefs.lang] || LANGS.zh;\n    var s = L[key] || (LANGS.zh[key] || key);\n    if (vars) {\n      for (var k in vars) {\n        if (Object.prototype.hasOwnProperty.call(vars, k)) {\n          s = s.split('{' + k + '}').join(String(vars[k]));\n        }\n      }\n    }\n    return s;\n  }\n\n  /* 本页进入时间：用来过滤 Surge 嗅探到的候选，只留当前页面的。\n     注入点选在 </head>，所以这个时间早于 SPA 发起请求。 */\n  var enterTs = Date.now();\n\n  /* ===================== 基础工具 ===================== */\n\n  function mk(tag, css, html) {\n    var e = document.createElement(tag);\n    if (css) e.setAttribute('style', css);\n    if (html != null) e.innerHTML = html;\n    return e;\n  }\n\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n\n  function thumb(url) {\n    if (!url) return '';\n    if (!/hdslb\\.com/.test(url)) return url;\n    return url + THUMB;\n  }\n\n  function idFrom(str) {\n    var m = /(?:id|item_id|suit_id|act_id)=(\\d+)/.exec(String(str || ''));\n    return m ? m[1] : '';\n  }\n\n  function jget(url) {\n    return fetch(url, { credentials: 'include' }).then(function (r) {\n      return r.json();\n    });\n  }\n\n  /* ===================== Surge 桥 ===================== */\n\n  function bget(path) {\n    return fetch(BRIDGE + path, { credentials: 'omit' }).then(function (r) {\n      return r.json();\n    });\n  }\n  function bpost(path, obj) {\n    return fetch(BRIDGE + path, {\n      method: 'POST',\n      credentials: 'omit',\n      headers: { 'Content-Type': 'text/plain' },\n      body: JSON.stringify(obj)\n    }).then(function (r) {\n      return r.json();\n    });\n  }\n\n  function bridgeSet(equip) {\n    return bpost('set', equip);\n  }\n  function bridgeGet() {\n    return bget('get');\n  }\n  function bridgeClear() {\n    return bget('clear');\n  }\n  function bridgeGallery() {\n    return bget('gallery');\n  }\n  function bridgeGalleryAdd(equip) {\n    return bpost('gallery/add', equip);\n  }\n  function bridgeSeen(since) {\n    return bget('seen?since=' + (since || 0));\n  }\n  /* 持久候选：App 原生页（收藏集 / 资产列表）里抓到的，7 天有效 */\n  function bridgeFound() {\n    return bget('found');\n  }\n  function bridgeSelfMid(mid) {\n    return bpost('selfmid', { mid: mid });\n  }\n  function bridgeSplashList() {\n    return bget('splash/list');\n  }\n  function bridgeSplashSet(sp) {\n    return bpost('splash/set', sp);\n  }\n  function bridgeChronosList() {\n    return bget('chronos/list');\n  }\n  function bridgeChronosSet(ch) {\n    return bpost('chronos/set', ch);\n  }\n  function bridgePrefs() {\n    return bget('prefs');\n  }\n  function bridgePrefsSet(obj) {\n    return bpost('prefs/set', obj);\n  }\n  function bridgeExport() {\n    return bget('export');\n  }\n  function bridgeApiLog() {\n    return bget('apilog');\n  }\n  function bridgeImport(obj) {\n    return bpost('import', obj);\n  }\n  function bridgeDiag() {\n    return bget('diag');\n  }\n  function bridgeEquips() {\n    return bget('equips');\n  }\n  function bridgeEquipUse(mid) {\n    return bget('equips/use?mid=' + encodeURIComponent(mid));\n  }\n  function bridgeEquipRemove(mid) {\n    return bget('equips/remove?mid=' + encodeURIComponent(mid));\n  }\n  function bridgeReminders() {\n    return bget('reminders');\n  }\n  function bridgeReminderAdd(r) {\n    return bpost('reminders/add', r);\n  }\n\n  /* 拉一次设置，失败就用默认值 */\n  async function loadPrefs() {\n    try {\n      var r = await bridgePrefs();\n      if (r && r.data && typeof r.data === 'object') {\n        for (var k in r.data) {\n          if (Object.prototype.hasOwnProperty.call(r.data, k)) prefs[k] = r.data[k];\n        }\n      }\n    } catch (e) {}\n    return prefs;\n  }\n\n  async function savePrefs(patch) {\n    for (var k in patch) {\n      if (Object.prototype.hasOwnProperty.call(patch, k)) prefs[k] = patch[k];\n    }\n    try {\n      await bridgePrefsSet(patch);\n    } catch (e) {}\n    return prefs;\n  }\n\n  /* ===================== B 站接口 ===================== */\n\n  function apiSuitDetail(id) {\n    return jget(API + '/x/garb/mall/item/suit/v2?part=suit&item_id=' + id).then(function (r) {\n      if (toEquip(r)) return r;\n      /* 公开接口拿不到时试内部接口——预购 / 收藏集主题套装走这条 */\n      return jget(API + '/x/garb/internal/v2/mall/suit/detail?item_id=' + id + '&part=suit');\n    });\n  }\n  /* 装扮详情（v2）。收藏集的主题套装也用这个 id 直接查。 */\n  function apiSuitDetailV2(id) {\n    return jget(API + '/x/garb/v2/mall/suit/detail?item_id=' + id + '&part=suit');\n  }\n  /* 依次试多个接口，返回第一个 code==0 的响应。\n     收藏集接口在 App 与 web 端不一样，多试几个总比只试一个强。 */\n  async function tryEndpoints(urls) {\n    for (var i = 0; i < urls.length; i++) {\n      try {\n        var r = await jget(urls[i]);\n        if (r && r.code === 0) return r;\n      } catch (e) {}\n    }\n    return null;\n  }\n  /* 收藏集的奖励清单。\n     App 侧真实接口是 x/vas/dlc_act/*（不是 web 的 lottery_home_detail）；\n     响应结构：data.collect_list.collect_infos[]（新版）或 data.collect_list[]（旧版）。 */\n  function apiCollectRewards(actId, lotteryId) {\n    var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');\n    return tryEndpoints([\n      API + '/x/vas/dlc_act/asset_bag_list?' + base,\n      API + '/x/vas/dlc_act/asset_bag_v2?' + base,\n      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base\n    ]);\n  }\n  /* 收藏集主页详情（返回 collect_infos 里的兑换物） */\n  function apiLotteryDetail(actId, lotteryId) {\n    var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');\n    return tryEndpoints([\n      API + '/x/vas/dlc_act/act/card/detail?' + base,\n      API + '/x/vas/dlc_act/card/widget_info_v2?' + base,\n      API + '/x/vas/dlc_act/lottery_home_detail?' + base\n    ]);\n  }\n  /* 收藏集卡片的开屏信息（收藏集专属开屏动画） */\n  function apiCollectSplash(actId) {\n    return jget(API + '/x/vas/dlc_act/card/splash_info?act_id=' + actId);\n  }\n  /* 官方搜索：服务端搜，装扮(part_id=6)和收藏集(part_id=0)都会返回 */\n  function apiSearch(kw) {\n    return jget(\n      API + '/x/garb/v2/mall/home/search?key_word=' + encodeURIComponent(kw) + '&pn=1&ps=20'\n    );\n  }\n  /* 装扮目录分页：part_id 默认 6（装扮），sort_type 默认 2。全站约 3400 套 */\n  function apiCatalogPage(pn, partId, sortType) {\n    var p = partId || 6;\n    var s = sortType === undefined || sortType === null ? 2 : sortType;\n    return jget(\n      API +\n        '/x/garb/v2/mall/partition/item/list?part_id=' +\n        p +\n        '&pn=' +\n        pn +\n        '&sort_type=' +\n        s\n    );\n  }\n  /* 当前登录用户 mid（用于 Surge 侧只改自己的评论装扮） */\n  function apiNav() {\n    return jget(API + '/x/web-interface/nav');\n  }\n\n  /* ===================== 纯逻辑（可测试） ===================== */\n\n  /* skin 组件的配色字段 -> user_equip.data */\n  function skinData(p) {\n    p = p || {};\n    return {\n      color_mode: p.color_mode || 'light',\n      color: p.color || '#212121',\n      color_second_page: p.color_second_page || '#ffffff',\n      side_bg_color: p.side_bg_color || p.color_second_page || '#ffffff',\n      tail_color: p.tail_color || '#996c00',\n      tail_color_selected: p.tail_color_selected || '#0d6872',\n      tail_icon_ani: String(p.tail_icon_ani) === 'true',\n      tail_icon_ani_mode: p.tail_icon_ani_mode || 'once',\n      tail_icon_mode: p.tail_icon_mode || 'img'\n    };\n  }\n\n  /* 一个 suit_items 子项 -> 归一化组件对象。\n     把 properties 摊平到顶层，再补上 item_id / name，Surge 侧按类型取用。 */\n  function componentOf(kind, entry) {\n    if (!entry || typeof entry !== 'object') return null;\n    var p = entry.properties || {};\n    var out = { kind: kind, id: entry.item_id || 0, name: entry.name || '' };\n    for (var k in p) {\n      if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];\n    }\n    /* 各类型的「包/图」地址做一次归一，方便 Surge 侧统一读取 */\n    if (kind === 'loading') {\n      out.url = p.loading_url || '';\n      out.frame_url = p.loading_frame_url || '';\n    } else if (kind === 'skin') {\n      out.url = p.package_url || '';\n      out.md5 = p.package_md5 || '';\n    } else if (kind === 'space_bg') {\n      out.url = p.image1_portrait || p.image1_landscape || p.image || '';\n    } else if (kind === 'pendant') {\n      out.url = p.image || p.image_enhance || p.pendant_pic || p.preview || '';\n      out.enhance = p.image_enhance || p.imageEnhance || '';\n    } else {\n      out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';\n    }\n    return out;\n  }\n\n  /* 一个「容器 + skin 子项」-> user_equip 配置。\n     同时把容器 suit_items 里的其它组件（loading/card/…）一并收进 components。 */\n  function equipFrom(container, skin) {\n    var p = (skin && skin.properties) || {};\n    if (!p.package_url) return null;\n    var item = (container && container.item) || {};\n    var equip = {\n      id: item.item_id || (container && container.item_id) || (skin && skin.item_id) || 0,\n      name: item.name || (container && container.name) || (skin && skin.name) || '',\n      preview: p.image_preview || p.image_cover || '',\n      ver: Number(p.ver) || 1700000000,\n      package_url: p.package_url,\n      package_md5: p.package_md5 || '',\n      data: skinData(p),\n      components: {}\n    };\n\n    /* 把整套套装的所有组件都收进来。没有 suit_items 时至少放进 skin 自己。 */\n    var si = (container && container.suit_items) || null;\n    if (si && typeof si === 'object') {\n      for (var i = 0; i < COMPONENTS.length; i++) {\n        var kind = COMPONENTS[i];\n        var arr = si[kind];\n        var c = componentOf(kind, Array.isArray(arr) ? arr[0] : arr);\n        if (c) equip.components[kind] = c;\n      }\n    }\n    if (!equip.components.skin) {\n      equip.components.skin = componentOf('skin', skin);\n    }\n    return equip;\n  }\n\n  /* 装扮详情响应 -> user_equip 配置 */\n  function toEquip(d) {\n    var da = d && d.data;\n    if (!da) return null;\n    var skins = (da.suit_items && da.suit_items.skin) || [];\n    return equipFrom(da, skins[0]);\n  }\n\n  /* 递归找出所有「带装扮包的容器」 */\n  function harvest(node, out, depth) {\n    if (!node || typeof node !== 'object' || depth > 9) return;\n    if (Array.isArray(node)) {\n      for (var i = 0; i < node.length; i++) harvest(node[i], out, depth + 1);\n      return;\n    }\n    if (node.suit_items && typeof node.suit_items === 'object') {\n      var skins = node.suit_items.skin;\n      if (Array.isArray(skins)) {\n        for (var j = 0; j < skins.length; j++) {\n          var e = equipFrom(node, skins[j]);\n          if (e) out.push(e);\n        }\n      }\n    }\n    for (var k in node) {\n      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;\n      try {\n        harvest(node[k], out, depth + 1);\n      } catch (err) {}\n    }\n  }\n\n  function scanState(win) {\n    var out = [];\n    var roots = [\n      win.__INITIAL_MIRROR__,\n      win.__INITIAL_STATE__,\n      win.__NUXT__,\n      win.__PRELOADED_STATE__,\n      win.__DATA__,\n      win.__GARB_DATA__\n    ];\n    for (var i = 0; i < roots.length; i++) {\n      if (roots[i]) harvest(roots[i], out, 0);\n    }\n    return out;\n  }\n\n  /* 从 URL 与 DOM 里收集「可能指向装扮」的 id */\n  function collectIds(doc, loc) {\n    var seen = {};\n    var out = [];\n    function add(v) {\n      var s = String(v == null ? '' : v).replace(/\\D/g, '');\n      if (!s || s.length < 3 || seen[s]) return;\n      seen[s] = 1;\n      out.push(s);\n    }\n\n    var s = (loc.search || '') + '&' + (loc.hash || '');\n    var re = /[?&](?:id|item_id|suit_id)=(\\d+)/g;\n    var m;\n    while ((m = re.exec(s)) !== null) add(m[1]);\n\n    try {\n      var links = doc.querySelectorAll ? doc.querySelectorAll('a[href]') : [];\n      for (var i = 0; i < links.length; i++) {\n        var href = links[i].getAttribute('href') || '';\n        if (!/suit\\/detail|mall|suit-preview|garbDetail/i.test(href)) continue;\n        add(idFrom(href));\n      }\n    } catch (e) {}\n\n    return out.slice(0, MAX_RESOLVE);\n  }\n\n  /* 从 URL 里取数字参数 */\n  function param(loc, name) {\n    var s = (loc.search || '') + '&' + (loc.hash || '');\n    var m = new RegExp('[?&]' + name + '=(\\\\d+)').exec(s);\n    return m ? m[1] : '';\n  }\n\n  /* 收藏集奖励 -> 可尝试的装扮 id。\n     type=4 Suit：redeem_item_id 本身就是装扮 id。\n     type=5 MaterialCombination（动态主题套装）：是若干子项 id，用 & 分隔。\n     兼容两种 collect_list 结构：\n       新版 data.collect_list.collect_infos[]（lottery_home_detail）\n       旧版 data.collect_list[]（lottery/home_detail/v2） */\n  function collectInfos(raw) {\n    var cl = raw && raw.data && raw.data.collect_list;\n    if (!cl) return [];\n    if (Array.isArray(cl)) return cl;\n    if (Array.isArray(cl.collect_infos)) return cl.collect_infos;\n    return [];\n  }\n\n  function mapRedeemIds(raw) {\n    var out = [];\n    var list = collectInfos(raw);\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      var t = Number(it.redeem_item_type);\n      if (t !== 4 && t !== 5) continue;\n      var parts = String(it.redeem_item_id || '').split('&');\n      for (var j = 0; j < parts.length; j++) {\n        var s = parts[j].replace(/\\D/g, '');\n        if (s.length >= 5) out.push(s);\n      }\n    }\n    return out;\n  }\n\n  /* 收藏集兑换物 -> 装扮候选（id + 名字 + 预览图），用于空状态里给线索 */\n  function mapRedeemItems(raw) {\n    var out = [];\n    var list = collectInfos(raw);\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      var t = Number(it.redeem_item_type);\n      if (t !== 4 && t !== 5) continue;\n      var name = it.redeem_item_name || '';\n      var img = it.redeem_item_image || '';\n      var jump = it.jump_url || it.garb_suit_url || '';\n      if (!name && !img && !jump) continue;\n      out.push({ name: name, preview: img, jump: jump, type: t });\n    }\n    return out;\n  }\n\n  /* 有没有任何一个组件（收藏集 / 资产列表抓到的「单组件」候选没有 package_url） */\n  function hasAnyComponent(e) {\n    var c = e && e.components;\n    if (!c || typeof c !== 'object') return false;\n    for (var k in c) {\n      if (Object.prototype.hasOwnProperty.call(c, k)) return true;\n    }\n    return false;\n  }\n\n  /* 兑换物类型名 -> 组件。B站自己就是按 redeem_item_type_name 显示的，\n     数字类型各活动不统一（实测见过 1/3/4/5/1001），所以按名字映射最稳。 */\n  var TYPE_NAME_COMPONENT = {\n    头像挂件: 'pendant',\n    挂件: 'pendant',\n    粉丝挂件: 'pendant',\n    评论背景: 'card_bg',\n    评论装扮: 'card_bg',\n    动态卡片: 'card',\n    卡片: 'card',\n    空间头图: 'space_bg',\n    空间海报: 'space_bg',\n    加载动画: 'loading',\n    进度条: 'play_icon',\n    点赞效果: 'thumbup',\n    点赞: 'thumbup',\n    个性主题: 'skin',\n    主题: 'skin'\n  };\n\n  function kindOfTypeName(name) {\n    var s = String(name == null ? '' : name).trim();\n    if (!s) return '';\n    if (TYPE_NAME_COMPONENT[s]) return TYPE_NAME_COMPONENT[s];\n    for (var k in TYPE_NAME_COMPONENT) {\n      if (s.indexOf(k) >= 0) return TYPE_NAME_COMPONENT[k];\n    }\n    return '';\n  }\n\n  /* 收藏集兑换物 -> 单组件候选。\n     头像挂件 / 评论背景 / 动态卡片 这类**不是套装**，拿 id 去查详情查不到，\n     但 collect_infos 里直接给了 redeem_item_image —— 有图就能当候选用。\n     主题套装那种只带 id，标 needResolve 交给上层去拉详情。 */\n  function mapRedeemComponents(raw) {\n    var out = [];\n    var list = collectInfos(raw);\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      var kind = kindOfTypeName(it.redeem_item_type_name);\n      var img = it.redeem_item_image || it.redeem_detail_image || '';\n      var idStr = String(it.redeem_item_id || '');\n      var name = it.redeem_item_name || '';\n      var id = /^\\d+$/.test(idStr) ? Number(idStr) : idStr;\n      var hasImg = /^https?:\\/\\//.test(img);\n\n      if (!kind || kind === 'skin' || !hasImg) {\n        if (id) {\n          out.push({\n            id: id,\n            name: name,\n            preview: hasImg ? img : '',\n            components: {},\n            from: 'collect',\n            needResolve: true,\n            typeName: it.redeem_item_type_name || ''\n          });\n        }\n        continue;\n      }\n\n      var comp = { id: id || 0, name: name, url: img };\n      if (kind === 'pendant') comp.image = img;\n      var comps = {};\n      comps[kind] = comp;\n      out.push({\n        id: id || name,\n        name: name,\n        preview: img,\n        ver: 1700000000,\n        components: comps,\n        from: 'collect',\n        partial: true,\n        typeName: it.redeem_item_type_name || ''\n      });\n    }\n    return out;\n  }\n\n  function mergeById() {\n    var out = [];\n    var seen = {};\n    for (var i = 0; i < arguments.length; i++) {\n      var list = arguments[i] || [];\n      for (var j = 0; j < list.length; j++) {\n        var e = list[j];\n        if (!e || !e.id || seen[e.id]) continue;\n        /* 只带 id 的（收藏集主题套装）也留，后面补一次详情 */\n        if (!e.package_url && !e.needResolve && !hasAnyComponent(e)) continue;\n        seen[e.id] = 1;\n        out.push(e);\n      }\n    }\n    return out;\n  }\n\n  /* 一套装扮带了哪些组件（用于卡片角标） */\n  function componentBadges(it) {\n    if (it && it.isChronos) return ['Chronos 开屏'];\n    if (it && it.isSplash) return ['开屏动画'];\n    var c = it && it.components;\n    if (!c) return [];\n    var out = [];\n    for (var i = 0; i < COMPONENTS.length; i++) {\n      var k = COMPONENTS[i];\n      if (k === 'skin') continue;\n      if (c[k]) out.push(COMPONENT_LABEL[k] || k);\n    }\n    return out;\n  }\n\n  /* Surge 侧捕获到的 Chronos 包 -> 候选卡片。\n     注意：包体有 RSA 签名，只能回放服务端发过的，不能凭空造。 */\n  function mapChronosItems(list) {\n    var out = [];\n    if (!Array.isArray(list)) return out;\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      if (!it.url || !it.sign) continue;\n      out.push({\n        id: 'ch' + (it.id || i),\n        name: 'Chronos 开屏' + (it.service_key ? ' · ' + it.service_key : '') + ' #' + (i + 1),\n        preview: '',\n        isChronos: true,\n        chronos: {\n          id: it.id,\n          service_key: it.service_key || '',\n          url: it.url,\n          md5: it.md5 || '',\n          sign: it.sign\n        }\n      });\n    }\n    return out;\n  }\n\n  /* Surge 侧嗅探到的开屏 -> 候选卡片。brand=品牌开屏，event=活动开屏。 */\n  function mapSplashItems(list) {\n    var out = [];\n    if (!Array.isArray(list)) return out;\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i] || {};\n      if (!it.thumb) continue;\n      var kind = it.kind === 'event' ? 'event' : 'brand';\n      out.push({\n        id: 'sp' + kind + (it.id || i),\n        name: (kind === 'event' ? '活动开屏' : '开屏动画') + ' #' + (it.id || i + 1),\n        preview: it.thumb,\n        isSplash: true,\n        splash: {\n          kind: kind,\n          id: it.id,\n          thumb: it.thumb,\n          logo_url: it.logo_url || '',\n          duration: 3000\n        }\n      });\n    }\n    return out;\n  }\n\n  /* ===================== 全量目录（兜底用） ===================== */\n\n  /* 目录条目 -> 卡片数据。只有 id / 名字 / 封面，点开再去拉装扮包。 */\n  function mapSuit(it) {\n    it = it || {};\n    var p = it.properties || {};\n    var price = Number(p.sale_bp_forever_raw || 0) || 0;\n    return {\n      id: it.item_id,\n      name: it.name,\n      cover: p.image_cover || '',\n      preview: p.image_cover || p.image_preview || '',\n      cat: it.group_name || '',\n      paid: price > 0,\n      salePrice: price,\n      owner_uid: p.owner_uid || ''\n    };\n  }\n\n  /* 搜索响应：收藏集混在里面，只留装扮 */\n  function mapSearch(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) {\n      if (list[i].part_id === 6) out.push(mapSuit(list[i]));\n    }\n    return out;\n  }\n\n  /* 搜索响应里的收藏集（part_id=0）。用户搜的常常是收藏集名，\n     收藏集不是装扮，但它的「主题套装」上线后会变成装扮。 */\n  function mapCollectHits(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) {\n      var it = list[i];\n      if (it.part_id !== 0) continue;\n      var p = it.properties || {};\n      out.push({\n        id: it.item_id,\n        name: it.name,\n        upcoming: String(p.dlc_act_status) === '1',\n        startAt: Number(p.dlc_sale_start_time || 0)\n      });\n    }\n    return out;\n  }\n\n  function fmtTime(ts) {\n    if (!ts) return '';\n    var d = new Date(ts * 1000);\n    function p2(n) {\n      return (n < 10 ? '0' : '') + n;\n    }\n    return (\n      d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) +\n      ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes())\n    );\n  }\n\n  function collectHint(hits, kw) {\n    var lines = [];\n    for (var i = 0; i < hits.length; i++) {\n      var h = hits[i];\n      lines.push(\n        '· ' +\n          h.name +\n          (h.upcoming && h.startAt ? '\\n    ' + fmtTime(h.startAt) + ' 开售' : '') +\n          (h.upcoming\n            ? '\\n    <span data-remind=\"' +\n              esc(h.id || h.name) +\n              '\" data-remind-name=\"' +\n              esc(h.name) +\n              '\" data-remind-at=\"' +\n              (h.startAt || 0) +\n              '\" style=\"color:' +\n              PINK +\n              '\">' +\n              esc(t('remind')) +\n              '</span>'\n            : '')\n      );\n    }\n    return emptyHtml(\n      '「' + kw + '」是收藏集，不是装扮。\\n收藏集的「主题套装」要等它上线后才会出现：\\n\\n' +\n        lines.join('\\n') +\n        '\\n\\n上线后再搜一次就能找到。'\n    );\n  }\n\n  function mapCatalogPage(raw) {\n    var out = [];\n    var list = (raw && raw.data && raw.data.list) || [];\n    for (var i = 0; i < list.length; i++) out.push(mapSuit(list[i]));\n    return out;\n  }\n\n  /* ===================== 候选收集 ===================== */\n\n  async function collectCandidates() {\n    var stateHits = [];\n    try {\n      stateHits = scanState(window);\n    } catch (e) {}\n\n    /* 1) 本页嗅探到的（since = 进入本页的时刻） */\n    var sniffed = [];\n    try {\n      var r = await bridgeSeen(enterTs);\n      sniffed = (r && r.data) || [];\n    } catch (e) {}\n\n    /* 2) 之前在 App 原生页逛的时候抓到的（30 分钟内，不限本页）。\n       收藏集是原生页，逛完再回面板，enterTs 早就过去了 —— 不带上这批就永远「没获取到」。 */\n    var recent = [];\n    try {\n      var r2 = await bridgeSeen(0);\n      recent = (r2 && r2.data) || [];\n    } catch (e) {}\n\n    /* 3) 持久候选：收藏集兑换物 / 已拥有资产列表，7 天有效。\n       数量上限单独收一下，免得面板一开就是几十张卡。 */\n    var found = [];\n    try {\n      var r3 = await bridgeFound();\n      found = ((r3 && r3.data) || []).slice(0, 40);\n    } catch (e) {}\n\n    var merged = mergeById(sniffed, stateHits, found, recent);\n\n    var ids = collectIds(document, location);\n\n    /* 收藏集页：奖励清单里的 id 也一并试（「动态主题套装」在这里）。\n       act_id 在 URL 上；lottery_id 可能没有，缺了拿不到数据，两个都试一遍。 */\n    var actId = param(location, 'act_id');\n    if (actId) {\n      var rawList = [];\n      try {\n        rawList.push(await apiLotteryDetail(actId, param(location, 'lottery_id')));\n      } catch (e) {}\n      try {\n        rawList.push(await apiCollectRewards(actId, param(location, 'lottery_id')));\n      } catch (e) {}\n      for (var r2i = 0; r2i < rawList.length; r2i++) {\n        var extra = mapRedeemIds(rawList[r2i]);\n        for (var n = 0; n < extra.length; n++) {\n          if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);\n        }\n        /* 头像挂件 / 评论背景这类不是套装，id 查不出详情，直接按图拼候选 */\n        var partials = mapRedeemComponents(rawList[r2i]);\n        for (var p = 0; p < partials.length; p++) {\n          var dupP = false;\n          for (var q = 0; q < merged.length; q++) {\n            if (String(merged[q].id) === String(partials[p].id)) {\n              dupP = true;\n              break;\n            }\n          }\n          if (!dupP) merged.push(partials[p]);\n        }\n      }\n    }\n\n    /* 只有 id 的候选（收藏集的主题套装）：在页面里补一次详情 */\n    var pending = [];\n    for (var m0 = 0; m0 < merged.length; m0++) {\n      if (merged[m0] && merged[m0].needResolve && merged[m0].id) pending.push(m0);\n    }\n    for (var m1 = 0; m1 < pending.length && m1 < MAX_RESOLVE; m1++) {\n      var idx = pending[m1];\n      try {\n        var full = toEquip(await apiSuitDetail(merged[idx].id));\n        if (full) merged[idx] = full;\n      } catch (e) {}\n    }\n\n    for (var i = 0; i < ids.length; i++) {\n      var dup = false;\n      for (var k = 0; k < merged.length; k++) {\n        if (String(merged[k].id) === ids[i]) {\n          dup = true;\n          break;\n        }\n      }\n      if (dup) continue;\n      try {\n        var e = toEquip(await apiSuitDetail(ids[i]));\n        if (e) merged.push(e);\n      } catch (err) {}\n    }\n\n    /* 补不出详情的（只有 id、也没图）丢掉，免得点「应用」才报错 */\n    merged = merged.filter(function (x) {\n      return x && (x.package_url || x.isSplash || x.isChronos || hasAnyComponent(x));\n    });\n\n    /* 开屏动画候选：Surge 侧嗅探到的 x/v2/splash/brand/list 与 event/list2 */\n    try {\n      var sr = await bridgeSplashList();\n      var splashItems = mapSplashItems(sr && sr.data);\n      for (var s = 0; s < splashItems.length; s++) merged.push(splashItems[s]);\n    } catch (err2) {}\n\n    /* Chronos 开屏包候选：Surge 侧捕获的 {url,md5,sign}（只能回放，不能造） */\n    try {\n      var cr = await bridgeChronosList();\n      var chItems = mapChronosItems(cr && cr.data);\n      for (var c2 = 0; c2 < chItems.length; c2++) merged.push(chItems[c2]);\n    } catch (err3) {}\n\n    return merged;\n  }\n\n  /* 把当前登录 mid 交给 Surge，用于「只改自己的评论装扮」 */\n  function reportSelfMid() {\n    apiNav()\n      .then(function (r) {\n        var mid = r && r.data && r.data.mid;\n        if (mid) return bridgeSelfMid(mid);\n      })\n      .catch(function () {});\n  }\n\n  /* ===================== 应用 ===================== */\n\n  async function applyEquip(equip) {\n    /* Chronos 开屏包走单独的存储（回放服务端发过的三件套） */\n    if (equip && equip.isChronos) {\n      var cr = await bridgeChronosSet(equip.chronos);\n      if (!cr || cr.code !== 0) throw new Error((cr && cr.msg) || '保存失败');\n      return equip;\n    }\n    /* 开屏动画走单独的存储与注入点 */\n    if (equip && equip.isSplash) {\n      var sr = await bridgeSplashSet(equip.splash);\n      if (!sr || sr.code !== 0) throw new Error((sr && sr.msg) || '保存失败');\n      return equip;\n    }\n    try {\n      await bridgeGalleryAdd(equip);\n    } catch (e) {}\n    var r = await bridgeSet(equip);\n    if (!r || r.code !== 0) throw new Error((r && r.msg) || '保存失败');\n    return equip;\n  }\n\n  /* ===================== 提示 ===================== */\n\n  var toastEl = null;\n  function toast(msg, ok) {\n    if (toastEl) toastEl.remove();\n    toastEl = mk(\n      'div',\n      'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483002;' +\n        'max-width:76vw;padding:12px 18px;border-radius:12px;font-size:14px;line-height:1.5;' +\n        'color:#fff;text-align:center;white-space:pre-line;word-break:break-word;' +\n        'background:' + (ok ? 'rgba(0,0,0,.82)' : 'rgba(214,48,49,.92)') +\n        ';-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)',\n      esc(msg)\n    );\n    document.body.appendChild(toastEl);\n    setTimeout(function () {\n      if (toastEl) {\n        toastEl.remove();\n        toastEl = null;\n      }\n    }, 2400);\n  }\n\n  /* ===================== 卡片 ===================== */\n\n  function cardHtml(it) {\n    var badges = componentBadges(it);\n    var badgeHtml = badges.length\n      ? '<div style=\"position:absolute;left:6px;top:6px;display:flex;flex-wrap:wrap;gap:4px;' +\n        'max-width:90%\">' +\n        badges\n          .map(function (b) {\n            return (\n              '<span style=\"font-size:10px;line-height:16px;padding:0 6px;border-radius:8px;' +\n              'background:rgba(0,0,0,.55);color:#fff\">' +\n              esc(b) +\n              '</span>'\n            );\n          })\n          .join('') +\n        '</div>'\n      : '';\n    var note = it.note\n      ? '<div style=\"margin-top:2px;font-size:11px;color:#9499a0;overflow:hidden;' +\n        'text-overflow:ellipsis;white-space:nowrap\">' +\n        esc(it.note) +\n        '</div>'\n      : '';\n    return (\n      '<div data-id=\"' +\n      it.id +\n      '\" data-name=\"' +\n      esc(it.name || '') +\n      '\" data-detail=\"1\" style=\"background:#fff;border-radius:12px;overflow:hidden;' +\n      'box-shadow:0 1px 6px rgba(0,0,0,.07);cursor:pointer\">' +\n      '<div style=\"position:relative;width:100%;aspect-ratio:1/1;background:#f4f4f5;overflow:hidden\">' +\n      (it.preview\n        ? '<img src=\"' + esc(thumb(it.preview)) + '\" loading=\"lazy\" ' +\n          'style=\"display:block;width:100%;height:100%;object-fit:cover\">'\n        : '') +\n      badgeHtml +\n      '</div>' +\n      '<div style=\"padding:8px 10px 10px\">' +\n      '<div style=\"font-size:13px;line-height:1.35;color:#18191c;overflow:hidden;' +\n      'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:35px\">' +\n      esc(it.name) + '</div>' +\n      note +\n      '<div data-apply=\"' + it.id + '\" style=\"margin-top:8px;height:30px;line-height:30px;' +\n      'text-align:center;border-radius:15px;background:' + PINK + ';color:#fff;font-size:12px\">' +\n      t('apply') +\n      '</div>' +\n      '</div></div>'\n    );\n  }\n\n  /* 装扮详情：大图 + 组件清单 + 来源 / 价格。没有预览图时退化成纯文字。 */\n  function detailHtml(it) {\n    var rows = [];\n    if (it.components) {\n      for (var i = 0; i < COMPONENTS.length; i++) {\n        var k = COMPONENTS[i];\n        var c = it.components[k];\n        if (!c) continue;\n        rows.push(\n          '<div style=\"display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f4f4f5\">' +\n            '<div style=\"flex:none;width:84px;font-size:12px;color:#61666d\">' +\n            esc(COMPONENT_LABEL[k] || k) +\n            '</div>' +\n            '<div style=\"flex:1;min-width:0;font-size:12px;color:#18191c;word-break:break-all\">' +\n            esc(c.name || c.id || '-') +\n            '</div></div>'\n        );\n      }\n    }\n    var meta = [];\n    if (it.owner_uid) meta.push('UP ' + it.owner_uid);\n    if (it.salePrice) meta.push(t('price') + ' ' + it.salePrice);\n    else if (it.paid === false) meta.push(t('free'));\n\n    return (\n      (it.preview\n        ? '<div style=\"width:100%;aspect-ratio:1/1;background:#f4f4f5;border-radius:12px;' +\n          'overflow:hidden;margin-bottom:12px\"><img src=\"' + esc(it.preview) + '\" ' +\n          'style=\"display:block;width:100%;height:100%;object-fit:cover\"></div>'\n        : '') +\n      (rows.length\n        ? '<div style=\"margin-bottom:10px\">' +\n          '<div style=\"font-size:13px;color:#61666d;margin-bottom:2px\">' + t('components') + '</div>' +\n          rows.join('') +\n          '</div>'\n        : '') +\n      (meta.length\n        ? '<div style=\"font-size:12px;color:#9499a0\">' + esc(meta.join(' · ')) + '</div>'\n        : '')\n    );\n  }\n\n  function openDetail(it) {\n    openSheet(it.name || t('detail'), t('detail'), [], detailHtml(it));\n    var body = panel.querySelector('#bss-body');\n    var btn = mk(\n      'div',\n      'margin-top:16px;height:38px;line-height:38px;text-align:center;border-radius:19px;' +\n        'background:' + PINK + ';color:#fff;font-size:14px',\n      t('apply')\n    );\n    btn.addEventListener('click', function () {\n      closePanel();\n      doApply(it);\n    });\n    body.appendChild(btn);\n  }\n\n  /* ===================== 面板 ===================== */\n\n  var panel = null;\n\n  function closePanel() {\n    if (panel) {\n      panel.remove();\n      panel = null;\n    }\n  }\n\n  /* 通用底部面板：标题 + 副标题 + 网格 + 右上角动作 */\n  function openSheet(title, subtitle, actions, bodyHtml) {\n    closePanel();\n\n    panel = mk(\n      'div',\n      'position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.5);' +\n        'display:flex;align-items:flex-end'\n    );\n\n    var sheet = mk(\n      'div',\n      'width:100%;max-height:82vh;background:#fff;border-radius:16px 16px 0 0;' +\n        'display:flex;flex-direction:column;overflow:hidden;' +\n        'font-family:-apple-system,system-ui,sans-serif'\n    );\n\n    var actionHtml = (actions || [])\n      .map(function (a) {\n        return (\n          '<span data-act=\"' + esc(a.key) + '\" style=\"font-size:12px;color:' +\n          (a.pink ? PINK : '#9499a0') + ';margin-left:14px\">' + esc(a.label) + '</span>'\n        );\n      })\n      .join('');\n\n    sheet.innerHTML =\n      '<div style=\"flex:none;padding:16px 16px 10px\">' +\n      '<div style=\"display:flex;align-items:flex-start;justify-content:space-between\">' +\n      '<div style=\"flex:1;min-width:0\">' +\n      '<div style=\"font-size:16px;font-weight:600;color:#18191c\">' + esc(title) + '</div>' +\n      (subtitle\n        ? '<div style=\"margin-top:4px;font-size:12px;color:#9499a0\">' + esc(subtitle) + '</div>'\n        : '') +\n      '</div>' +\n      '<div style=\"flex:none;padding-left:10px\">' + actionHtml +\n      '<span data-act=\"close\" style=\"font-size:20px;color:#9499a0;margin-left:14px;' +\n      'line-height:1\">&times;</span></div>' +\n      '</div></div>' +\n      '<div id=\"bss-body\" style=\"flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;' +\n      'padding:0 16px calc(env(safe-area-inset-bottom,0px) + 20px)\">' + bodyHtml + '</div>';\n\n    panel.appendChild(sheet);\n    panel.addEventListener('click', function (e) {\n      if (e.target === panel) closePanel();\n    });\n    document.body.appendChild(panel);\n    return sheet;\n  }\n\n  function gridHtml(list) {\n    return (\n      '<div style=\"display:grid;grid-template-columns:repeat(2,1fr);gap:12px\">' +\n      list.map(cardHtml).join('') +\n      '</div>'\n    );\n  }\n\n  function emptyHtml(text) {\n    return (\n      '<div style=\"padding:44px 0;text-align:center;color:#9499a0;font-size:13px;' +\n      'line-height:1.8;white-space:pre-line\">' + esc(text) + '</div>'\n    );\n  }\n\n  /* 选中列表：1 个直接应用，多个弹选择 */\n  async function runApply() {\n    if (!launcher) return;\n    launcher.textContent = t('scanning');\n    launcher.style.opacity = '.7';\n\n    var list;\n    try {\n      list = await collectCandidates();\n    } catch (e) {\n      list = [];\n    }\n\n    launcher.textContent = t('apply');\n    launcher.style.opacity = '1';\n\n    if (list.length === 0) return showEmpty();\n    if (list.length === 1) return doApply(list[0]);\n\n    openSheet(\n      t('pick'),\n      t('pickSub', { n: list.length }),\n      [],\n      gridHtml(list)\n    );\n    bindGridActions(panel.querySelector('#bss-body'), list);\n  }\n\n  /* 自动扫描：设置里开了之后，进页面若有唯一候选就直接注入，不打扰。 */\n  var autoScanned = '';\n  async function autoScanOnce() {\n    if (!prefs.autoScan) return;\n    var key = location.pathname + location.search;\n    if (key === autoScanned) return;\n    autoScanned = key;\n    var list;\n    try {\n      list = await collectCandidates();\n    } catch (e) {\n      return;\n    }\n    if (list.length === 1) doApply(list[0]);\n  }\n\n  function bindGridActions(root, list) {\n    if (!root) return;\n    root.addEventListener('click', function (e) {\n      var ap = e.target.closest && e.target.closest('[data-apply]');\n      var card = e.target.closest && e.target.closest('[data-id]');\n      if (!card) return;\n      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');\n      var hit = null;\n      for (var i = 0; i < list.length; i++) {\n        if (String(list[i].id) === String(id)) {\n          hit = list[i];\n          break;\n        }\n      }\n      if (!hit) return;\n      /* 点「应用」直接注入；点卡片看详情 */\n      if (ap) {\n        closePanel();\n        doApply(hit);\n        return;\n      }\n      if (card.getAttribute('data-detail')) {\n        openDetail(hit);\n        return;\n      }\n      closePanel();\n      doApply(hit);\n    });\n  }\n\n  async function doApply(equip) {\n    if (launcher) launcher.textContent = t('applying');\n    try {\n      await applyEquip(equip);\n      if (launcher) launcher.textContent = t('applied');\n      var extra = componentBadges(equip);\n      toast(\n        '已注入「' + equip.name + '」' +\n          (extra.length ? '\\n含 ' + extra.join(' / ') : '') +\n          '\\n杀掉后台重进 B 站即可生效',\n        true\n      );\n    } catch (e) {\n      toast('失败：' + e.message);\n    }\n    setTimeout(function () {\n      if (launcher) launcher.textContent = t('apply');\n    }, 2600);\n  }\n\n  /* 本页没找到：给「浏览全部」兜底 + 藏馆里之前用过的 + 设置入口 */\n  async function showEmpty() {\n    var cur = null;\n    var gal = [];\n    var equips = {};\n    var rems = [];\n    try {\n      var g = await bridgeGet();\n      cur = g && g.data;\n    } catch (e) {}\n    try {\n      var r = await bridgeGallery();\n      gal = (r && r.data) || [];\n    } catch (e) {}\n    try {\n      var eq = await bridgeEquips();\n      equips = (eq && eq.data) || {};\n    } catch (e) {}\n    try {\n      var rm = await bridgeReminders();\n      rems = (rm && rm.data) || [];\n    } catch (e) {}\n\n    var acts = [\n      { key: 'browse', label: t('browse'), pink: true },\n      { key: 'settings', label: t('settings') }\n    ];\n    if (cur && cur.name) acts.push({ key: 'clear', label: t('clear') });\n\n    var isCard = /digital-card/.test(location.pathname || '');\n    var tip = isCard ? t('emptyCard') : t('empty');\n\n    var galList = groupGallery(gal, equips);\n\n    var body = emptyHtml(tip);\n\n    if (rems.length) {\n      body +=\n        '<div style=\"margin:2px 0 10px;font-size:13px;color:#61666d\">' +\n        esc(t('remind')) +\n        '</div>' +\n        rems\n          .map(function (x) {\n            return (\n              '<div style=\"padding:8px 0;font-size:13px;color:#18191c\">' +\n              esc(x.name) +\n              (x.startAt ? ' · ' + esc(fmtTime(x.startAt)) : '') +\n              '</div>'\n            );\n          })\n          .join('');\n    }\n\n    if (galList.length) {\n      body +=\n        '<div style=\"margin:2px 0 10px;font-size:13px;color:#61666d\">' +\n        esc(t('gallery')) +\n        '</div>' +\n        gridHtml(galList);\n    }\n\n    openSheet(t('apply'), cur && cur.name ? '当前：' + cur.name : '', acts, body);\n    bindGridActions(panel.querySelector('#bss-body'), galList);\n\n    var browseBtn = panel.querySelector('[data-act=\"browse\"]');\n    if (browseBtn) {\n      browseBtn.addEventListener('click', function () {\n        openBrowse();\n      });\n    }\n\n    var setBtn = panel.querySelector('[data-act=\"settings\"]');\n    if (setBtn) {\n      setBtn.addEventListener('click', function () {\n        openSettings();\n      });\n    }\n\n    var clearBtn = panel.querySelector('[data-act=\"clear\"]');\n    if (clearBtn) {\n      clearBtn.addEventListener('click', async function () {\n        await bridgeClear();\n        closePanel();\n        toast('已清除注入的装扮', true);\n      });\n    }\n  }\n\n  /* 兜底：全站装扮目录（约 3400 套）。\n     搜索走服务端；分类用已加载条目的 group_name 做前端筛选；\n     排序走 sort_type；还能直接输 ID。 */\n  async function openBrowse() {\n    openSheet(\n      t('all'),\n      t('allSub'),\n      [{ key: 'byid', label: t('byId') }],\n      '<input id=\"bss-q\" placeholder=\"' + esc(t('search')) + '\" ' +\n        'style=\"width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +\n        'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none\">' +\n        '<div id=\"bss-tools\" style=\"margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;' +\n        'align-items:center;font-size:12px\"></div>' +\n        '<div id=\"bss-cats\" style=\"margin-top:8px;display:flex;flex-wrap:wrap;gap:6px\"></div>' +\n        '<div id=\"bss-grid\" style=\"margin-top:12px\"></div>' +\n        '<div id=\"bss-more\" style=\"padding:18px 0;text-align:center;font-size:12px;' +\n        'color:#9499a0\"></div>'\n    );\n\n    var body = panel.querySelector('#bss-body');\n    var qEl = body.querySelector('#bss-q');\n    var toolsEl = body.querySelector('#bss-tools');\n    var catsEl = body.querySelector('#bss-cats');\n    var gridEl = body.querySelector('#bss-grid');\n    var moreEl = body.querySelector('#bss-more');\n\n    var st = {\n      pn: 0,\n      done: false,\n      loading: false,\n      kw: '',\n      timer: 0,\n      sort: 2,\n      cat: '',\n      all: [],\n      shown: []\n    };\n\n    function chip(label, active, onTap) {\n      var el = mk(\n        'span',\n        'padding:3px 10px;border-radius:12px;cursor:pointer;' +\n          'background:' + (active ? PINK : '#f4f4f5') + ';' +\n          'color:' + (active ? '#fff' : '#61666d'),\n        esc(label)\n      );\n      el.addEventListener('click', onTap);\n      return el;\n    }\n\n    function renderTools() {\n      toolsEl.innerHTML = '';\n      toolsEl.appendChild(chip(t('sortNew'), st.sort === 2, function () {\n        st.sort = 2;\n        reset();\n      }));\n      toolsEl.appendChild(chip(t('sortHot'), st.sort === 1, function () {\n        st.sort = 1;\n        reset();\n      }));\n      var idWrap = mk('span', 'display:inline-flex;gap:6px;align-items:center');\n      idWrap.innerHTML =\n        '<input id=\"bss-id\" placeholder=\"' + esc(t('idPlaceholder')) + '\" ' +\n        'style=\"width:96px;height:26px;padding:0 10px;border:none;border-radius:13px;' +\n        'background:#f4f4f5;font-size:12px;outline:none\">' +\n        '<span id=\"bss-idgo\" style=\"color:' + PINK + ';cursor:pointer\">' + esc(t('go')) + '</span>';\n      toolsEl.appendChild(idWrap);\n      var idEl = toolsEl.querySelector('#bss-id');\n      var goEl = toolsEl.querySelector('#bss-idgo');\n      goEl.addEventListener('click', function () {\n        var v = (idEl.value || '').replace(/\\D/g, '');\n        if (v) {\n          closePanel();\n          applyById(v);\n        }\n      });\n    }\n\n    function renderCats() {\n      catsEl.innerHTML = '';\n      var names = [];\n      var seen = {};\n      for (var i = 0; i < st.all.length; i++) {\n        var g = st.all[i].cat;\n        if (g && !seen[g]) {\n          seen[g] = 1;\n          names.push(g);\n        }\n      }\n      if (!names.length) return;\n      catsEl.appendChild(chip('全部', !st.cat, function () {\n        st.cat = '';\n        applyFilter();\n      }));\n      for (var j = 0; j < names.length && j < 12; j++) {\n        (function (name) {\n          catsEl.appendChild(chip(name, st.cat === name, function () {\n            st.cat = name;\n            applyFilter();\n          }));\n        })(names[j]);\n      }\n    }\n\n    function applyFilter() {\n      var list = st.all;\n      if (st.cat) {\n        list = list.filter(function (x) {\n          return x.cat === st.cat;\n        });\n      }\n      st.shown = list;\n      gridEl.innerHTML = list.length ? gridHtml(list) : emptyHtml('没有匹配的装扮');\n      renderCats();\n    }\n\n    function reset() {\n      st.pn = 0;\n      st.done = false;\n      st.all = [];\n      st.cat = '';\n      gridEl.innerHTML = '';\n      moreEl.textContent = '';\n      renderTools();\n      renderCats();\n      loadMore();\n    }\n\n    function loadMore() {\n      if (st.loading || st.done || st.kw) return;\n      st.loading = true;\n      moreEl.textContent = t('loading');\n      var pn = st.pn + 1;\n      apiCatalogPage(pn, 6, st.sort)\n        .then(function (raw) {\n          var list = mapCatalogPage(raw);\n          if (!list.length) {\n            st.done = true;\n            moreEl.textContent = t('noMore');\n          } else {\n            st.pn = pn;\n            for (var i = 0; i < list.length; i++) st.all.push(list[i]);\n            applyFilter();\n            moreEl.textContent = '';\n          }\n        })\n        .catch(function (e) {\n          moreEl.textContent = '加载失败：' + e.message;\n        })\n        .then(function () {\n          st.loading = false;\n        });\n    }\n\n    function doSearch(kw) {\n      if (!kw) {\n        reset();\n        return;\n      }\n      moreEl.textContent = t('loading');\n      apiSearch(kw)\n        .then(function (raw) {\n          var list = mapSearch(raw);\n          if (list.length) {\n            st.all = list;\n            st.cat = '';\n            applyFilter();\n            moreEl.textContent = '';\n          } else {\n            var hits = mapCollectHits(raw);\n            gridEl.innerHTML = hits.length\n              ? collectHint(hits, kw)\n              : emptyHtml('没搜到「' + kw + '」\\n换个关键词试试');\n            catsEl.innerHTML = '';\n            moreEl.textContent = '';\n          }\n        })\n        .catch(function (e) {\n          moreEl.textContent = '搜索失败：' + e.message;\n        });\n    }\n\n    qEl.addEventListener('input', function () {\n      st.kw = qEl.value.trim();\n      clearTimeout(st.timer);\n      st.timer = setTimeout(function () {\n        doSearch(st.kw);\n      }, 400);\n    });\n\n    /* 触底加载更多 */\n    body.addEventListener('scroll', function () {\n      if (st.kw || st.loading || st.done) return;\n      if (body.scrollTop + body.clientHeight >= body.scrollHeight - 400) loadMore();\n    });\n\n    /* 目录条目只有 id / 名字 / 封面，点了再去拉装扮包 */\n    gridEl.addEventListener('click', function (e) {\n      var rem = e.target.closest && e.target.closest('[data-remind]');\n      if (rem) {\n        bridgeReminderAdd({\n          id: rem.getAttribute('data-remind'),\n          name: rem.getAttribute('data-remind-name'),\n          startAt: Number(rem.getAttribute('data-remind-at')) || 0\n        }).then(function () {\n          toast(t('remindAdded'), true);\n        });\n        return;\n      }\n      var ap = e.target.closest && e.target.closest('[data-apply]');\n      var card = e.target.closest && e.target.closest('[data-id]');\n      if (!card) return;\n      var id = (ap || card).getAttribute('data-apply') || card.getAttribute('data-id');\n      if (ap) {\n        closePanel();\n        applyById(id);\n        return;\n      }\n      /* 目录里只有封面，没有组件；点开就先拉详情再展示 */\n      openCatalogDetail(id, card.getAttribute('data-name') || '');\n    });\n\n    renderTools();\n    loadMore();\n  }\n\n  /* 目录条目点开：先拉详情，再弹详情面板 */\n  async function openCatalogDetail(id, name) {\n    toast(t('loading'));\n    var equip = null;\n    try {\n      equip = toEquip(await apiSuitDetail(id));\n    } catch (e) {}\n    if (!equip) {\n      toast('这套装扮拿不到装扮包');\n      return;\n    }\n    if (name && !equip.name) equip.name = name;\n    openDetail(equip);\n  }\n\n  async function applyById(id) {\n    try {\n      var equip = toEquip(await apiSuitDetail(id));\n      if (!equip) throw new Error('这套装扮拿不到装扮包');\n      await doApply(equip);\n    } catch (e) {\n      if (launcher) launcher.textContent = '应用装扮';\n      toast('失败：' + e.message);\n    }\n  }\n\n  /* ===================== 设置 / 导出导入 ===================== */\n\n  /* 自定义开屏图：品牌开屏那条路会把我们塞的条目 unshift 进 data.list / data.show，\n     不依赖服务端下发候选 —— 所以随便给一张图就能当开屏用。\n     活动开屏要 md5 校验，改图得先把图拉下来算 md5，这一步 Surge 侧会做；\n     Chronos 开屏有服务端 RSA 签名，只能从候选里回放。 */\n  function openSplashSet() {\n    openSheet(\n      '自定义开屏图',\n      '填一张图片直链（竖图更好看）。保存后杀掉后台重进 B站。',\n      [\n        { key: 'save', label: '保存', pink: true },\n        { key: 'clear', label: '清除' }\n      ],\n      '<input id=\"bss-sp\" placeholder=\"https://i0.hdslb.com/bfs/....jpg\" ' +\n        'style=\"width:100%;box-sizing:border-box;height:40px;padding:0 12px;border:none;' +\n        'border-radius:10px;background:#f4f4f5;font-size:12px;outline:none\">' +\n        '<div style=\"margin-top:10px;font-size:12px;color:#9499a0;line-height:1.7\">' +\n        '只走「品牌开屏」通道。活动开屏 / Chronos 开屏需要服务端签名或 md5，' +\n        '只能从下面候选里挑。</div>'\n    );\n\n    var el = panel.querySelector('#bss-sp');\n    var save = panel.querySelector('[data-act=\"save\"]');\n    if (save) {\n      save.addEventListener('click', async function () {\n        var v = el ? String(el.value || '').trim() : '';\n        if (!/^https?:\\/\\//.test(v)) return toast('要一个 http(s) 图片直链');\n        try {\n          var r = await bridgeSplashSet({\n            kind: 'brand',\n            id: 900000001,\n            thumb: v,\n            duration: 3000\n          });\n          if (r && r.code === 0) {\n            toast('已设为开屏图\\n杀掉后台重进 B站生效', true);\n            closePanel();\n          } else {\n            toast('保存失败：' + ((r && r.msg) || '未知'));\n          }\n        } catch (e) {\n          toast('保存失败：' + e.message);\n        }\n      });\n    }\n    var clr = panel.querySelector('[data-act=\"clear\"]');\n    if (clr) {\n      clr.addEventListener('click', async function () {\n        try {\n          await bget('splash/clear');\n        } catch (e) {}\n        toast('已清除', true);\n        closePanel();\n      });\n    }\n  }\n\n  /* 设置面板：开关 + 导出/导入 + 诊断 */\n  async function openSettings() {\n    var diag = null;\n    try {\n      var d = await bridgeDiag();\n      diag = d && d.data;\n    } catch (e) {}\n\n    function toggleRow(key, label) {\n      return (\n        '<div data-toggle=\"' + key + '\" style=\"display:flex;align-items:center;' +\n        'justify-content:space-between;padding:12px 0;border-bottom:1px solid #f4f4f5;' +\n        'font-size:14px;color:#18191c;cursor:pointer\">' +\n        '<span>' + esc(label) + '</span>' +\n        '<span style=\"font-size:12px;color:' + (prefs[key] ? PINK : '#9499a0') + '\">' +\n        (prefs[key] ? '开' : '关') + '</span></div>'\n      );\n    }\n\n    var diagHtml = diag\n      ? '<div style=\"margin-top:14px;padding:12px;border-radius:10px;background:#f4f4f5;' +\n        'font-size:12px;line-height:1.9;color:#61666d;white-space:pre-line\">' +\n        esc(\n          t('diag') + '\\n' +\n            '当前装扮: ' + (diag.equip ? diag.equip.name + ' (#' + diag.equip.id + ')' : '无') + '\\n' +\n            '组件: ' + (diag.equip && diag.equip.components.length ? diag.equip.components.join('/') : '—') + '\\n' +\n            '主题/加载动画: ' + (diag.equip ? (diag.equip.hasSkin ? '有' : '无') + ' / ' + (diag.equip.hasLoading ? '有' : '无') : '—') + '\\n' +\n            '我的 mid: ' + (diag.selfMid || '未知') + '\\n' +\n            '本页嗅探: ' + diag.seen + ' 条\\n' +\n            '持久候选: ' + (diag.found || 0) + ' 条（收藏集 / 资产列表，7 天）\\n' +\n            '藏馆: ' + diag.gallery + ' 套\\n' +\n            'Chronos 候选: ' + diag.chronos\n        ) +\n        '</div>'\n      : '';\n\n    openSheet(\n      t('settings'),\n      '',\n      [\n        { key: 'export', label: t('export'), pink: true },\n        { key: 'import', label: t('import') },\n        { key: 'splashset', label: '自定义开屏图' },\n        { key: 'apilog', label: '导出接口日志' }\n      ],\n      toggleRow('allMembers', '评论装扮改所有人（默认只改自己）') +\n        toggleRow('notify', '应用成功发系统通知') +\n        toggleRow('autoScan', '进页面自动扫描') +\n        toggleRow('grpcAll', 'gRPC 兜底：换掉所有 garb 图') +\n        '<div data-toggle=\"lang\" style=\"display:flex;align-items:center;justify-content:space-between;' +\n        'padding:12px 0;border-bottom:1px solid #f4f4f5;font-size:14px;color:#18191c;cursor:pointer\">' +\n        '<span>语言 / Language</span><span style=\"font-size:12px;color:' + PINK + '\">' +\n        (prefs.lang === 'en' ? 'EN' : '中文') +\n        '</span></div>' +\n        diagHtml\n    );\n\n    var body = panel.querySelector('#bss-body');\n    body.addEventListener('click', async function (e) {\n      var row = e.target.closest && e.target.closest('[data-toggle]');\n      if (!row) return;\n      var key = row.getAttribute('data-toggle');\n      if (key === 'lang') {\n        await savePrefs({ lang: prefs.lang === 'en' ? 'zh' : 'en' });\n        openSettings();\n        return;\n      }\n      var patch = {};\n      patch[key] = !prefs[key];\n      await savePrefs(patch);\n      openSettings();\n    });\n\n    var expBtn = panel.querySelector('[data-act=\"export\"]');\n    if (expBtn) expBtn.addEventListener('click', openExport);\n    var impBtn = panel.querySelector('[data-act=\"import\"]');\n    if (impBtn) impBtn.addEventListener('click', openImport);\n    var spBtn = panel.querySelector('[data-act=\"splashset\"]');\n    if (spBtn) spBtn.addEventListener('click', openSplashSet);\n    var logBtn = panel.querySelector('[data-act=\"apilog\"]');\n    if (logBtn) {\n      logBtn.addEventListener('click', async function () {\n        var r = null;\n        try {\n          r = await bridgeApiLog();\n        } catch (e) {}\n        var list = (r && r.data) || [];\n        if (!list.length) {\n          return toast('还没有接口日志。\\n先去开屏 / 空间 / 收藏集页逛一圈再回来。');\n        }\n        var text = JSON.stringify(list, null, 1);\n        openSheet(\n          '接口日志',\n          '共 ' + list.length + ' 条，长按全选复制',\n          [],\n          '<textarea readonly style=\"width:100%;box-sizing:border-box;height:320px;' +\n            'border:1px solid #e3e5e7;border-radius:10px;padding:10px;font-size:11px;' +\n            'line-height:1.5;font-family:monospace;color:#18191c;background:#fafafa\">' +\n            esc(text) +\n            '</textarea>'\n        );\n      });\n    }\n  }\n\n  /* 导出：把整份配置吐成文本，方便换设备 */\n  async function openExport() {\n    var txt = '';\n    try {\n      var r = await bridgeExport();\n      txt = JSON.stringify(r && r.data);\n    } catch (e) {\n      txt = '导出失败：' + e.message;\n    }\n    openSheet(\n      t('export'),\n      t('copyHint'),\n      [],\n      '<textarea id=\"bss-exp\" readonly style=\"width:100%;box-sizing:border-box;height:220px;' +\n        'padding:12px;border:none;border-radius:10px;background:#f4f4f5;font-size:11px;' +\n        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none\">' +\n        esc(txt) +\n        '</textarea>' +\n        '<div id=\"bss-copy\" style=\"margin-top:12px;height:38px;line-height:38px;text-align:center;' +\n        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px\">' +\n        esc(t('copied')) +\n        '</div>'\n    );\n    var el = panel.querySelector('#bss-exp');\n    var cp = panel.querySelector('#bss-copy');\n    if (cp) {\n      cp.addEventListener('click', function () {\n        if (el) {\n          el.select();\n          try {\n            document.execCommand('copy');\n          } catch (e) {}\n        }\n        toast(t('copied'), true);\n      });\n    }\n  }\n\n  /* 导入：粘一段之前导出的内容 */\n  function openImport() {\n    openSheet(\n      t('import'),\n      t('importHint'),\n      [],\n      '<textarea id=\"bss-imp\" placeholder=\"' +\n        esc(t('importHint')) +\n        '\" style=\"width:100%;box-sizing:border-box;height:220px;padding:12px;border:none;' +\n        'border-radius:10px;background:#f4f4f5;font-size:11px;' +\n        'font-family:ui-monospace,Menlo,monospace;resize:none;outline:none\"></textarea>' +\n        '<div id=\"bss-doimp\" style=\"margin-top:12px;height:38px;line-height:38px;text-align:center;' +\n        'border-radius:19px;background:' + PINK + ';color:#fff;font-size:14px\">' +\n        esc(t('doImport')) +\n        '</div>'\n    );\n    var el = panel.querySelector('#bss-imp');\n    var btn = panel.querySelector('#bss-doimp');\n    if (btn) {\n      btn.addEventListener('click', async function () {\n        var raw = el ? el.value.trim() : '';\n        if (!raw) return;\n        var obj;\n        try {\n          obj = JSON.parse(raw);\n        } catch (e) {\n          toast('不是合法的导出内容');\n          return;\n        }\n        try {\n          var r = await bridgeImport(obj);\n          if (r && r.code === 0) {\n            toast('已导入 ' + ((r.data && r.data.sections) || 0) + ' 段配置\\n杀后台重进生效', true);\n            closePanel();\n          } else {\n            toast('导入失败：' + ((r && r.msg) || '未知'));\n          }\n        } catch (e) {\n          toast('导入失败：' + e.message);\n        }\n      });\n    }\n  }\n\n  /* 藏馆按账号分组 */\n  function groupGallery(gal, equips) {\n    var map = {};\n    var mids = equips && typeof equips === 'object' ? Object.keys(equips) : [];\n    for (var i = 0; i < mids.length; i++) {\n      var mid = mids[i];\n      var e = equips[mid];\n      if (e && e.id) map[String(e.id)] = mid;\n    }\n    var out = [];\n    for (var j = 0; j < gal.length; j++) {\n      var it = gal[j];\n      it.mid = map[String(it.id)] || '';\n      out.push(it);\n    }\n    return out;\n  }\n\n  /* ===================== 悬浮按钮（可拖动） ===================== */\n\n  var launcher = null;\n\n  function mountLauncher() {\n    if (launcher) return;\n    var saved = null;\n    try {\n      saved = JSON.parse(localStorage.getItem(POS_KEY) || 'null');\n    } catch (e) {}\n\n    var pos =\n      saved && saved.left != null\n        ? 'left:' + saved.left + 'px;top:' + saved.top + 'px;'\n        : 'left:56px;top:calc(env(safe-area-inset-top,0px) + 8px);';\n\n    launcher = mk(\n      'div',\n      'position:fixed;z-index:2147483000;' + pos +\n        'padding:7px 14px;border-radius:20px;background:' + PINK + ';color:#fff;' +\n        'font-size:12px;font-weight:500;font-family:-apple-system,system-ui,sans-serif;' +\n        'box-shadow:0 4px 16px rgba(251,114,153,.45);cursor:pointer;white-space:nowrap;' +\n        'user-select:none;-webkit-user-select:none;touch-action:none;' +\n        '-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)',\n      t('apply')\n    );\n\n    var sx = 0, sy = 0, ox = 0, oy = 0, moved = false, dragging = false;\n\n    function down(e) {\n      var t = e.touches ? e.touches[0] : e;\n      var r = launcher.getBoundingClientRect();\n      dragging = true;\n      moved = false;\n      sx = t.clientX;\n      sy = t.clientY;\n      ox = r.left;\n      oy = r.top;\n      launcher.style.left = ox + 'px';\n      launcher.style.top = oy + 'px';\n    }\n    function move(e) {\n      if (!dragging) return;\n      var t = e.touches ? e.touches[0] : e;\n      var dx = t.clientX - sx;\n      var dy = t.clientY - sy;\n      if (!moved && Math.abs(dx) < 5 && Math.abs(dy) < 5) return;\n      moved = true;\n      if (e.cancelable) e.preventDefault();\n      var w = launcher.offsetWidth;\n      var h = launcher.offsetHeight;\n      launcher.style.left = Math.min(Math.max(ox + dx, 4), window.innerWidth - w - 4) + 'px';\n      launcher.style.top = Math.min(Math.max(oy + dy, 4), window.innerHeight - h - 4) + 'px';\n    }\n    function up() {\n      if (!dragging) return;\n      dragging = false;\n      if (moved) {\n        var r = launcher.getBoundingClientRect();\n        try {\n          localStorage.setItem(\n            POS_KEY,\n            JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) })\n          );\n        } catch (e) {}\n      } else {\n        runApply();\n      }\n    }\n\n    launcher.addEventListener('touchstart', down, { passive: true });\n    launcher.addEventListener('touchmove', move, { passive: false });\n    launcher.addEventListener('touchend', up);\n    launcher.addEventListener('mousedown', down);\n    document.addEventListener('mousemove', move);\n    document.addEventListener('mouseup', up);\n\n    document.body.appendChild(launcher);\n  }\n\n  /* ===================== 路由 ===================== */\n\n  var lastPath = '';\n\n  function markEnter() {\n    enterTs = Date.now();\n  }\n\n  /* 按钮该出现的页面：\n     - /h5/mall/*                装扮商城、详情页、收藏集\n     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页）\n     - /garb/collection-hall/*   收藏集大厅\n     注意 /h5/garb/draw-card 这类抽卡页不放按钮——那里没有装扮包数据。 */\n  function isTargetPage(p) {\n    return (\n      /h5\\/mall/.test(p) ||\n      /blackboard\\/fe\\/suit-preview\\.html/.test(p) ||\n      /garb\\/collection-hall/.test(p)\n    );\n  }\n\n  function route() {\n    var p = (location.pathname || '') + (location.hash || '');\n    if (!isTargetPage(p)) {\n      if (launcher) {\n        launcher.remove();\n        launcher = null;\n      }\n      lastPath = '';\n      return;\n    }\n    var key = location.pathname + location.search + location.hash;\n    if (key === lastPath) return;\n    lastPath = key;\n    closePanel();\n    mountLauncher();\n    setTimeout(autoScanOnce, 300);\n  }\n\n  ['pushState', 'replaceState'].forEach(function (m) {\n    var orig = history[m];\n    if (typeof orig !== 'function') return;\n    history[m] = function () {\n      markEnter();\n      var r = orig.apply(this, arguments);\n      setTimeout(route, 0);\n      return r;\n    };\n  });\n  window.addEventListener('popstate', function () {\n    markEnter();\n    setTimeout(route, 0);\n  });\n  window.addEventListener('hashchange', function () {\n    markEnter();\n    setTimeout(route, 0);\n  });\n  setInterval(route, 800);\n\n  /* 先把设置拉下来（语言等），再决定按钮和路由 */\n  loadPrefs().then(function () {\n    if (document.body) route();\n    else document.addEventListener('DOMContentLoaded', route);\n  });\n\n  reportSelfMid();\n\n  /* 测试钩子 */\n  window.__BSS_API__ = {\n    COMPONENTS: COMPONENTS,\n    COMPONENT_LABEL: COMPONENT_LABEL,\n    idFrom: idFrom,\n    param: param,\n    thumb: thumb,\n    isTargetPage: isTargetPage,\n    mapRedeemIds: mapRedeemIds,\n    mapRedeemItems: mapRedeemItems,\n    mapRedeemComponents: mapRedeemComponents,\n    kindOfTypeName: kindOfTypeName,\n    collectInfos: collectInfos,\n    mapSuit: mapSuit,\n    mapSearch: mapSearch,\n    mapCollectHits: mapCollectHits,\n    fmtTime: fmtTime,\n    collectHint: collectHint,\n    mapCatalogPage: mapCatalogPage,\n    equipFrom: equipFrom,\n    toEquip: toEquip,\n    harvest: harvest,\n    scanState: scanState,\n    collectIds: collectIds,\n    mergeById: mergeById,\n    componentOf: componentOf,\n    componentBadges: componentBadges,\n    mapSplashItems: mapSplashItems,\n    mapChronosItems: mapChronosItems,\n    detailHtml: detailHtml,\n    groupGallery: groupGallery,\n    LANGS: LANGS,\n    skinData: skinData,\n    cardHtml: cardHtml,\n    enterTs: function () {\n      return enterTs;\n    },\n    markEnter: markEnter\n  };\n})();\n";
 
 var TYPE =
   ($script && $script.type) ||
@@ -160,16 +210,26 @@ function isHttpUrl(u) {
   return typeof u === 'string' && /^https?:\/\//.test(u);
 }
 
-/* 主题皮肤（package_url）或加载动画（loading_url）任一存在即算有效配置 */
+/* 主题皮肤（package_url）或加载动画（loading_url）任一存在即算有效配置。
+   收藏集 / 资产列表抓到的「单组件」候选（只有头像挂件、只有评论装扮…）没有
+   package_url，所以这里也认「任意组件带图」的形态。 */
 function validEquip(e) {
   if (!e || typeof e !== 'object') return false;
   if (isHttpUrl(e.package_url)) return true;
+  if (isHttpUrl(e.loading_url)) return true;
   var c = e.components;
   if (c && typeof c === 'object') {
     if (c.skin && isHttpUrl(c.skin.package_url || c.skin.url)) return true;
     if (c.loading && isHttpUrl(c.loading.loading_url || c.loading.url)) return true;
+    for (var k in c) {
+      if (!Object.prototype.hasOwnProperty.call(c, k)) continue;
+      var v = c[k];
+      if (!v || typeof v !== 'object') continue;
+      if (isHttpUrl(v.url) || isHttpUrl(v.image) || isHttpUrl(v.package_url) || isHttpUrl(v.loading_url)) {
+        return true;
+      }
+    }
   }
-  if (e.loading_url && isHttpUrl(e.loading_url)) return true;
   return false;
 }
 
@@ -181,6 +241,37 @@ function pathOf(url) {
 
 function queryOf(url) {
   return String(url || '').split('?')[1] || '';
+}
+
+/* 这些接口的响应结构还没完全解出（开屏 / 空间 / 我的页 / 收藏集 / 资产），
+   记下 URL + 响应样本，方便从 H5 面板导出定位。范围尽量宽，
+   因为「为什么没生效」往往就差一条响应没看到。 */
+function shouldLogApi(url) {
+  return /\/x\/(?:v2\/splash|v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/dlc_act|vas\/digital|garb\/user|garb\/skin|garb\/right|garb\/digital|garb\/mall|chronos|resource\/show\/skin)/.test(
+    url
+  );
+}
+
+function logApi(url, body) {
+  try {
+    var p = pathOf(url);
+    if (!p) return;
+    var list = readJSON(KEY_APILOG, []);
+    if (!(list instanceof Array)) list = [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].path === p) list.splice(i, 1);
+    }
+    var s = typeof body === 'string' ? body : '';
+    list.unshift({
+      ts: Date.now(),
+      path: p,
+      q: queryOf(url).slice(0, 200),
+      len: s.length,
+      sample: s.length > 3000 ? s.slice(0, 3000) : s
+    });
+    if (list.length > 40) list = list.slice(0, 40);
+    writeJSON(KEY_APILOG, list);
+  } catch (e) {}
 }
 
 function intParam(qs, name) {
@@ -414,7 +505,7 @@ function compsOf(e) {
   var c = (e && e.components) || {};
   var out = {};
   function pick(kind, url) {
-    if (isHttpUrl(url)) out[kind] = url;
+    if (isHttpUrl(url) && !out[kind]) out[kind] = url;
   }
   var skin = c.skin || {};
   var loading = c.loading || {};
@@ -429,10 +520,12 @@ function compsOf(e) {
   pick('loading', loading.loading_url || loading.url);
   pick('card', card.image || card.url || cardbg.image);
   pick('card_bg', cardbg.image || cardbg.url || card.image);
-  pick('pendant', pend.image || pend.url);
-  pick('thumbup', thumb.image_ani || thumb.url);
-  pick('play_icon', play.static_icon_image || play.url);
-  pick('space_bg', space.url || space.image1_portrait);
+  /* 挂件：静态图优先，拿不到就退到动态形态那张 */
+  pick('pendant', pend.image || pend.url || pend.image_enhance || pend.imageEnhance);
+  pick('pendant', pend.enhance);
+  pick('thumbup', thumb.image_ani || thumb.image_ani_cut || thumb.url);
+  pick('play_icon', play.static_icon_image || play.url || play.middle_png);
+  pick('space_bg', space.url || space.image1_portrait || space.image1_landscape);
   if (isHttpUrl(pend.image_enhance)) out.pendant = out.pendant || pend.image_enhance;
   return out;
 }
@@ -467,32 +560,139 @@ function rewriteByField(node, comps, depth) {
 }
 
 /* 只按字段名命中就换图 —— 用在空间装扮、收藏集开屏这类「结构不明」的响应上。 */
-function handleGarbFields() {
-  var equip = readJSON(KEY_EQUIP, null);
-  if (!validEquip(equip)) return $done({});
-  var comps = compsOf(equip);
-  if (!comps) return $done({});
+/* 递归换图：字符串字段（FIELD_COMPONENT）+ 对象字段（FIELD_OBJECT）。
+   只用于「一定/大概率是自己的数据」的页面（空间主页 / 我的页 / 数字藏品）。 */
+function rewriteProfile(node, comps, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return 0;
+  var n = 0;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) n += rewriteProfile(node[i], comps, depth + 1);
+    return n;
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
 
-  var body = $response && $response.body;
-  if (typeof body !== 'string' || body.length < 8 || body.length > 4194304) return $done({});
-
-  var hit = false;
-  for (var f in FIELD_COMPONENT) {
-    if (body.indexOf(f) >= 0) {
-      hit = true;
-      break;
+    /* 1) 扁平字符串字段：值是 URL 就直接换 */
+    var kind = FIELD_COMPONENT[k];
+    if (kind && typeof v === 'string' && /^https?:\/\//.test(v) && comps[kind] && v !== comps[kind]) {
+      node[k] = comps[kind];
+      n++;
+      continue;
     }
-  }
-  if (!hit) return $done({});
 
-  var json;
-  try {
-    json = JSON.parse(body);
-  } catch (e) {
-    return $done({});
+    /* 2) 对象字段（挂件 / 卡片 / 空间背景）：先把里面按字段名换一遍 */
+    var okind = FIELD_OBJECT[k];
+    if (okind && v && typeof v === 'object' && !(v instanceof Array) && comps[okind]) {
+      var sub = rewriteProfile(v, comps, depth + 1);
+      if (sub) {
+        n += sub;
+        continue;
+      }
+      /* 里面没有可识别的字段名：直接换对象的图片字段 */
+      var img = comps[okind];
+      var imgKeys = ['image', 'url'];
+      for (var q = 0; q < imgKeys.length; q++) {
+        var ik = imgKeys[q];
+        if (typeof v[ik] === 'string' && /^https?:\/\//.test(v[ik]) && v[ik] !== img) {
+          v[ik] = img;
+          n++;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (v && typeof v === 'object') n += rewriteProfile(v, comps, depth + 1);
   }
-  if (!rewriteByField(json, comps, 0)) return $done({});
-  $done({ body: JSON.stringify(json) });
+  return n;
+}
+
+/* 从 space / mine 响应里取「这个页面的主人」的 mid */
+function pickOwnerMid(json) {
+  var d = json && json.data;
+  if (!d || typeof d !== 'object') return '';
+  var cands = [d.mid, d.uid];
+  var c = d.card;
+  if (c && typeof c === 'object') cands.push(c.mid, c.mid_str, c.uid);
+  for (var i = 0; i < cands.length; i++) {
+    var x = cands[i];
+    if (x != null && String(x) !== '' && String(x) !== '0') return String(x);
+  }
+  return '';
+}
+
+/* 这些接口只可能返回「自己」的数据 */
+var MINE_RE = /\/x\/(?:v2\/account\/mine|member\/app\/pendant|garb\/user|garb\/v3\/user|garb\/skin|garb\/mall_v2\/mine)/;
+/* 需要「按字段名换图」的接口：空间主页 / 我的页 / 数字藏品 / 我的装扮设置 */
+var PROFILE_RE = /\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin)/;
+
+/* 空间主页 / 我的页 / 数字藏品 / 我的装扮：换自己的挂件、空间海报、卡片。
+   「我的」页一定是自己；space 页用响应里的 mid（或 URL 上的 mid/vmid）判断，
+   避免改到别人。返回 true 表示响应被改过（调用方负责 $done）。 */
+function rewriteProfileBody(url, json) {
+  var equip = readJSON(KEY_EQUIP, null);
+  if (!validEquip(equip)) return false;
+  var comps = compsOf(equip);
+  if (!comps) return false;
+
+  var isMine = MINE_RE.test(url);
+
+  /* 「我的」页一定是自己：顺手把 mid 学下来，之后 space 页才知道该改谁 */
+  var ownerMid = pickOwnerMid(json);
+  if (isMine && ownerMid) {
+    var cur = readJSON(KEY_SELF, null);
+    if (!cur || String(cur.mid) !== ownerMid) writeJSON(KEY_SELF, { mid: ownerMid });
+  }
+
+  /* 不是「我的」页：知道自己的 mid 时才做归属校验；
+     不知道 mid 就放行（不然「我的」空间会看起来完全没装扮）。
+     mid 由「我的」页 / H5 面板上报，正常用一次就学到了。 */
+  if (!isMine) {
+    var self = readJSON(KEY_SELF, null);
+    var selfMid = self && self.mid ? String(self.mid) : '';
+    var qMid = '';
+    var qm = /[?&](?:vmid|mid)=(\d+)/.exec('?' + queryOf(url));
+    if (qm) qMid = qm[1];
+    var who = ownerMid || qMid;
+    if (selfMid && who && who !== selfMid) return false;
+  }
+
+  return rewriteProfile(json, comps, 0) > 0;
+}
+
+/* 开屏候选合并写入。
+   以前每条通道（品牌 / 活动 / business / 收藏集）都是直接覆盖，
+   谁最后响应谁说了算 —— 结果往往只剩一堆没用的，自己想要的反而被冲掉。
+   现在按 kind#id 去重后合并，最多留 SPLASH_MAX 条。 */
+function mergeSplashList(items) {
+  if (!items || !items.length) return 0;
+  var fresh = [];
+  var keys = {};
+  var i;
+  for (i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!it || !isHttpUrl(it.thumb)) continue;
+    var k = String(it.kind || 'brand') + '#' + String(it.id);
+    if (keys[k]) continue;
+    keys[k] = 1;
+    fresh.push(it);
+  }
+  if (!fresh.length) return 0;
+
+  var cur = readJSON(KEY_SPLASH_LIST, []);
+  if (!(cur instanceof Array)) cur = [];
+  var keep = [];
+  for (i = 0; i < cur.length; i++) {
+    var c = cur[i];
+    if (!c || !isHttpUrl(c.thumb)) continue;
+    if (keys[String(c.kind || 'brand') + '#' + String(c.id)]) continue;
+    keep.push(c);
+  }
+  var out = fresh.concat(keep);
+  if (out.length > SPLASH_MAX) out = out.slice(0, SPLASH_MAX);
+  writeJSON(KEY_SPLASH_LIST, out);
+  return out.length;
 }
 
 /* 收藏集开屏（x/vas/dlc_act/card/splash_info）：结构未解，按字段名兜。
@@ -517,7 +717,7 @@ function handleCollectSplash() {
     for (var i = 0; i < urls.length && out.length < SPLASH_MAX; i++) {
       out.push({ kind: 'collect', id: i + 1, thumb: urls[i] });
     }
-    if (out.length) writeJSON(KEY_SPLASH_LIST, out);
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -753,12 +953,23 @@ function handleBridge() {
           : null,
         selfMid: (selfRec && selfRec.mid) || '',
         seen: seenList instanceof Array ? seenList.length : 0,
+        found: (function () {
+          var f = readJSON(KEY_FOUND, []);
+          return f instanceof Array ? f.length : 0;
+        })(),
         gallery: galList instanceof Array ? galList.length : 0,
         chronos: chList instanceof Array ? chList.length : 0,
         splash: readJSON(KEY_SPLASH, null) ? 1 : 0,
         prefs: readPrefs()
       }
     });
+  }
+
+  /* ---- 接口日志（定位响应结构用） ---- */
+  if (name === 'apilog') return reply({ code: 0, data: readJSON(KEY_APILOG, []) });
+  if (name === 'apilog/clear') {
+    $persistentStore.write('', KEY_APILOG);
+    return reply({ code: 0 });
   }
 
   /* ---- 导出 / 导入（换设备用） ---- */
@@ -897,6 +1108,26 @@ function handleBridge() {
     return reply({ code: 0 });
   }
 
+  /* 持久候选：在 App 原生页（收藏集 / 资产列表）里抓到的、只有单个组件的东西。
+     面板打开时不一定还在 seen 的 30 分钟窗口里，所以单独一条。 */
+  if (name === 'found') {
+    var fl = readJSON(KEY_FOUND, []);
+    if (!(fl instanceof Array)) fl = [];
+    var now2 = Date.now();
+    var fo = [];
+    for (var fi = 0; fi < fl.length; fi++) {
+      var fr = fl[fi];
+      if (!fr || !validEquip(fr.equip)) continue;
+      if (!fr.ts || now2 - fr.ts > FOUND_TTL) continue;
+      fo.push(fr.equip);
+    }
+    return reply({ code: 0, data: fo });
+  }
+  if (name === 'found/clear') {
+    $persistentStore.write('', KEY_FOUND);
+    return reply({ code: 0 });
+  }
+
   return reply({ code: 0, data: { ok: true } });
 }
 
@@ -997,6 +1228,7 @@ var COMPONENTS = [
   'loading',
   'card',
   'card_bg',
+  'pendant',
   'thumbup',
   'play_icon',
   'space_bg',
@@ -1033,6 +1265,9 @@ function componentOf(kind, entry) {
     out.md5 = p.package_md5 || '';
   } else if (kind === 'space_bg') {
     out.url = p.image1_portrait || p.image1_landscape || p.image || '';
+  } else if (kind === 'pendant') {
+    out.url = p.image || p.image_enhance || p.pendant_pic || p.preview || '';
+    out.enhance = p.image_enhance || p.imageEnhance || '';
   } else {
     out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';
   }
@@ -1089,29 +1324,15 @@ function harvest(node, out, depth) {
   }
 }
 
-function handleSniff() {
-  var body = $response && $response.body;
-  if (typeof body !== 'string') return $done({});
-  if (body.indexOf('suit_items') < 0) return $done({});
-
-  var json;
-  try {
-    json = JSON.parse(body);
-  } catch (e) {
-    return $done({});
-  }
-
-  var found = [];
-  harvest(json, found, 0);
-  if (!found.length) return $done({});
-
+/* 把抓到的候选写进「本页」存储（短 TTL，面板按 since 过滤）。 */
+function pushSeen(found) {
+  if (!found || !found.length) return 0;
   var now = Date.now();
   var list = readJSON(KEY_SEEN, []);
   if (!(list instanceof Array)) list = [];
   list = list.filter(function (x) {
     return x && x.ts && now - x.ts <= SEEN_TTL;
   });
-
   for (var i = 0; i < found.length; i++) {
     var e = found[i];
     for (var j = list.length - 1; j >= 0; j--) {
@@ -1120,8 +1341,284 @@ function handleSniff() {
     list.unshift({ ts: now, equip: e });
   }
   if (list.length > SEEN_MAX) list = list.slice(0, SEEN_MAX);
-
   writeJSON(KEY_SEEN, list);
+  return found.length;
+}
+
+/* 把抓到的候选写进「持久候选」存储（7 天）。
+   收藏集是在 App 原生页里逛的，等回到 H5 面板时 enterTs 早就过去了，
+   所以这条必须另外存，否则永远「没获取到」。 */
+function pushFound(found) {
+  if (!found || !found.length) return 0;
+  var now = Date.now();
+  var list = readJSON(KEY_FOUND, []);
+  if (!(list instanceof Array)) list = [];
+  list = list.filter(function (x) {
+    return x && x.ts && now - x.ts <= FOUND_TTL;
+  });
+  for (var i = 0; i < found.length; i++) {
+    var e = found[i];
+    for (var j = list.length - 1; j >= 0; j--) {
+      if (list[j].equip && String(list[j].equip.id) === String(e.id)) list.splice(j, 1);
+    }
+    list.unshift({ ts: now, equip: e });
+  }
+  if (list.length > FOUND_MAX) list = list.slice(0, FOUND_MAX);
+  writeJSON(KEY_FOUND, list);
+  return found.length;
+}
+
+/* ---------- 收藏集兑换物 ----------
+   收藏集（抽卡 / 数字藏品）里的东西不是 suit：响应的 collect_infos 里是
+   redeem_item_* 一组字段。实测条目（act_id=114713&lottery_id=114714）：
+     {redeem_item_type: 3,    redeem_item_type_name: "头像挂件", redeem_item_id: "1790565160001", ...}
+     {redeem_item_type: 1001, redeem_item_type_name: "评论背景", redeem_item_id: "", ...}
+     {redeem_item_type: 1,    redeem_item_type_name: "典藏卡",   redeem_item_id: "1790737537002", ...}
+   type 数字各活动不统一（见过 1/3/4/5/1001），所以**按名字**映射组件最稳。
+   这里只做「不花时间」的事：有图的直接拼成单组件候选；
+   只有 id 的（主题套装那种）标 needResolve，交给 H5 面板去拉详情——
+   免得为了几个请求把 App 的收藏集页卡住。 */
+
+var TYPE_NAME_COMPONENT = {
+  头像挂件: 'pendant',
+  挂件: 'pendant',
+  粉丝挂件: 'pendant',
+  评论背景: 'card_bg',
+  评论装扮: 'card_bg',
+  动态卡片: 'card',
+  卡片: 'card',
+  空间头图: 'space_bg',
+  空间海报: 'space_bg',
+  加载动画: 'loading',
+  进度条: 'play_icon',
+  点赞效果: 'thumbup',
+  点赞: 'thumbup',
+  个性主题: 'skin',
+  主题: 'skin'
+};
+
+function kindOfTypeName(name) {
+  var s = String(name || '').trim();
+  if (!s) return '';
+  if (TYPE_NAME_COMPONENT[s]) return TYPE_NAME_COMPONENT[s];
+  for (var k in TYPE_NAME_COMPONENT) {
+    if (s.indexOf(k) >= 0) return TYPE_NAME_COMPONENT[k];
+  }
+  return '';
+}
+
+/* 递归找出所有 redeem 条目（不依赖外层包装键名） */
+function collectRedeems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectRedeems(node[i], out, depth + 1);
+    return;
+  }
+  if (node.redeem_item_name || node.redeem_item_id || node.redeem_item_type_name) {
+    out.push({
+      id: String(node.redeem_item_id == null ? '' : node.redeem_item_id),
+      name: String(node.redeem_item_name || ''),
+      image: node.redeem_item_image || node.redeem_detail_image || '',
+      typeName: node.redeem_item_type_name || '',
+      type: Number(node.redeem_item_type) || 0,
+      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || ''
+    });
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectRedeems(v, out, depth + 1);
+  }
+}
+
+/* redeem 条目 -> 候选。有图 + 认得出组件就拼成单组件候选；否则只留 id 等面板解析。 */
+function equipFromRedeem(r) {
+  if (!r) return null;
+  var kind = kindOfTypeName(r.typeName);
+  var img = isHttpUrl(r.image) ? r.image : '';
+  var name = r.name || ('装扮 ' + (r.id || ''));
+  var id = /^\d+$/.test(r.id) ? Number(r.id) : r.id;
+
+  if (kind && img && kind !== 'skin') {
+    var comp = { id: id || 0, name: name, url: img };
+    if (kind === 'pendant') comp.image = img;
+    var comps = {};
+    comps[kind] = comp;
+    return {
+      id: id || name,
+      name: name,
+      preview: img,
+      ver: 1700000000,
+      components: comps,
+      from: 'collect',
+      partial: true,
+      typeName: r.typeName
+    };
+  }
+
+  /* 主题套装 / 认不出类型：只带 id，面板里再拉 x/garb/v2/mall/suit/detail */
+  if (r.id) {
+    return {
+      id: id,
+      name: name,
+      preview: img,
+      components: {},
+      from: 'collect',
+      needResolve: true,
+      typeName: r.typeName
+    };
+  }
+  return null;
+}
+
+/* ---------- 已拥有资产列表 ----------
+   x/garb/user/asset/list、x/garb/v3/user/asset、x/garb/user/pendant/list…
+   结构没完全解出，所以只在**明确看到 part 字段**时才动；
+   挂件那条接口按路径特判（它的条目没有 part）。
+   拿不到就什么都不做，但响应已经被 shouldLogApi 记进日志了。 */
+
+var ASSET_PARTS = {
+  skin: 1,
+  loading: 1,
+  card: 1,
+  card_bg: 1,
+  pendant: 1,
+  fansPendant: 1,
+  thumbup: 1,
+  play_icon: 1,
+  space_bg: 1
+};
+
+function collectAssets(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectAssets(node[i], out, depth + 1);
+    return;
+  }
+  var part = typeof node.part === 'string' ? node.part : '';
+  if (part && ASSET_PARTS[part]) {
+    var it = node.item || {};
+    out.push({
+      part: part === 'fansPendant' ? 'pendant' : part,
+      id: it.item_id || node.asset_id || node.id || 0,
+      name: it.name || node.name || '',
+      props: it.properties || node.properties || {}
+    });
+    return; /* 命中就不再往里钻 */
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectAssets(v, out, depth + 1);
+  }
+}
+
+/* 挂件接口（/x/garb/user/pendant/list）的条目没有 part，按字段特征认 */
+function collectPendantItems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectPendantItems(node[i], out, depth + 1);
+    return;
+  }
+  var p = node.properties || node;
+  if (
+    (isHttpUrl(p.image) || isHttpUrl(p.image_enhance)) &&
+    (node.item_id != null || node.id != null || node.pid != null)
+  ) {
+    out.push({
+      part: 'pendant',
+      id: node.item_id || node.id || node.pid || 0,
+      name: node.name || '',
+      props: p
+    });
+    return;
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectPendantItems(v, out, depth + 1);
+  }
+}
+
+/* ---------- 统一入口：从任意 garb/vas 响应里挖候选 ----------
+   一条响应里可能同时有多种东西（suit_items 套装 + collect_infos 兑换物 +
+   asset 列表），所以一次遍历全试一遍，最后统一写存储、只 $done 一次。 */
+function handleCandidates(url) {
+  var body = $response && $response.body;
+  if (typeof body !== 'string' || body.length < 16 || body.length > 4194304) return $done({});
+
+  var profile = PROFILE_RE.test(url);
+  /* 便宜的前置判断：没这三样、又不是空间/我的页，就别白解析一遍 JSON
+     （x/garb/mall/suit/all 那种全量目录能有好几 MB）。 */
+  var maybe =
+    body.indexOf('suit_items') >= 0 ||
+    body.indexOf('redeem_item') >= 0 ||
+    body.indexOf('"part"') >= 0 ||
+    /\/pendant\//.test(url);
+  if (!maybe && !profile) return $done({});
+  if (body.indexOf('{') < 0) return $done({});
+
+  var json;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    return $done({});
+  }
+  if (!json || typeof json !== 'object') return $done({});
+
+  var out = [];
+
+  /* 1) 套装：suit_items.skin[] 是主键，其它组件一起收 */
+  if (body.indexOf('suit_items') >= 0) {
+    var suits = [];
+    harvest(json, suits, 0);
+    for (var s = 0; s < suits.length && out.length < 40; s++) out.push(suits[s]);
+  }
+
+  /* 2) 收藏集兑换物 */
+  if (body.indexOf('redeem_item') >= 0) {
+    var redeems = [];
+    collectRedeems(json, redeems, 0);
+    for (var r = 0; r < redeems.length && out.length < 60; r++) {
+      var re = equipFromRedeem(redeems[r]);
+      if (re) out.push(re);
+    }
+  }
+
+  /* 3) 已拥有资产列表 */
+  if (body.indexOf('"part"') >= 0 || /\/pendant\//.test(url)) {
+    var assets = [];
+    collectAssets(json, assets, 0);
+    if (/\/pendant\//.test(url) && !assets.length) collectPendantItems(json, assets, 0);
+    for (var a = 0; a < assets.length && out.length < 90; a++) {
+      var it = assets[a];
+      var c = componentOf(it.part, { item_id: it.id, name: it.name, properties: it.props });
+      if (!c || !isHttpUrl(c.url)) continue;
+      var comps = {};
+      comps[it.part] = c;
+      out.push({
+        id: it.id || it.name,
+        name: it.name || '',
+        preview: c.url,
+        ver: 1700000000,
+        components: comps,
+        from: 'assets',
+        partial: true
+      });
+    }
+  }
+
+  if (out.length) {
+    pushSeen(out);
+    pushFound(out);
+  } else if (!profile) {
+    return $done({});
+  }
+
+  /* 空间 / 我的页 / 数字藏品 / 我的装扮：顺手按字段名换图 */
+  if (profile && rewriteProfileBody(url, json)) {
+    return $done({ body: JSON.stringify(json) });
+  }
   $done({});
 }
 
@@ -1234,7 +1731,12 @@ function handleCard() {
   if (!selfMid && !prefs.allMembers) return $done({});
 
   var body = $response && $response.body;
-  if (typeof body !== 'string' || body.indexOf('user_sailing') < 0) return $done({});
+  if (typeof body !== 'string') return $done({});
+  /* 评论/动态走 member.user_sailing*；动态信息流的作者节点是
+     modules.module_author，里面只有 pendant / card_bg —— 也要放进来。 */
+  if (body.indexOf('user_sailing') < 0 && body.indexOf('pendant') < 0 && body.indexOf('card_bg') < 0) {
+    return $done({});
+  }
 
   var json;
   try {
@@ -1253,13 +1755,106 @@ function handleCard() {
    - brand/list ：data.{pull_interval,list[],show[]}，list[].thumb 是开屏图
    - event/list2：一组「前后卡片」元素，front_image_url / back_image_url */
 function handleSplash() {
+  var url = ($request && $request.url) || '';
   var body = $response && $response.body;
   if (typeof body !== 'string') return $done({});
+
+  /* 新版 business 开屏（BFCBusinessSplashSwift）：list 拿候选、show 决定展示。
+     这是 App 现在真正走的一条，旧版 brand/list 只用于「品牌开屏设置」页。 */
+  if (/\/x\/v2\/splash\/(?:list|show)/.test(url)) return handleBusinessSplash(body, url);
   if (body.indexOf('pull_interval') >= 0) return handleBrandSplash(body);
   if (body.indexOf('front_image_url') >= 0 || body.indexOf('back_image_url') >= 0) {
     return handleEventSplash(body);
   }
   return $done({});
+}
+
+/* 新版 business 开屏：结构未完全解出，按「图片字段名」策略兜。
+   list 里认出创意项就记候选；选中后把候选里的图地址换成我们的图。 */
+function handleBusinessSplash(body, url) {
+  var json;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    return $done({});
+  }
+  if (!json || json.code !== 0) return $done({});
+
+  /* list：记录候选（含 id + 图） */
+  if (/\/list/.test(url)) {
+    var items = [];
+    collectSplashItems(json, items, 0);
+    if (items.length) mergeSplashList(items);
+  }
+
+  var splash = readJSON(KEY_SPLASH, null);
+  if (!splash || !isHttpUrl(splash.thumb)) return $done({});
+  if (splash.kind && splash.kind !== 'brand') return $done({});
+
+  /* 把响应里所有「开屏创意图」字段换成选中的图 */
+  if (!replaceSplashImage(json, splash.thumb, 0)) return $done({});
+  $done({ body: JSON.stringify(json) });
+}
+
+/* 开屏创意图字段白名单（尽量窄，避免误伤 logo / 按钮图） */
+var SPLASH_IMG_KEYS = {
+  image_url: 1,
+  image: 1,
+  thumb: 1,
+  pic: 1,
+  splash_image: 1,
+  main_image: 1,
+  cover: 1,
+  url: 0 /* url 太泛，只在含 id 的对象里才换 */
+};
+
+/* 递归：在「含 id 的对象」里替换开屏创意图 */
+function replaceSplashImage(node, img, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return 0;
+  var n = 0;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) n += replaceSplashImage(node[i], img, depth + 1);
+    return n;
+  }
+  var hasId = node.id != null || node.creative_id != null || node.splash_id != null;
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (SPLASH_IMG_KEYS[k] && typeof v === 'string' && /^https?:\/\//.test(v) && v !== img) {
+      /* url 这个键名太泛，只在明确是创意项（有 id）时换 */
+      if (k === 'url' && !hasId) continue;
+      node[k] = img;
+      n++;
+      continue;
+    }
+    if (v && typeof v === 'object') n += replaceSplashImage(v, img, depth + 1);
+  }
+  return n;
+}
+
+/* 从 business 开屏响应里挑候选（有 id 且含图地址的对象） */
+function collectSplashItems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectSplashItems(node[i], out, depth + 1);
+    return;
+  }
+  var id = node.id != null ? node.id : node.creative_id != null ? node.creative_id : null;
+  if (id != null) {
+    var img = '';
+    var keys = ['image_url', 'image', 'thumb', 'pic', 'splash_image', 'main_image', 'cover', 'url'];
+    for (var j = 0; j < keys.length; j++) {
+      if (isHttpUrl(node[keys[j]])) {
+        img = node[keys[j]];
+        break;
+      }
+    }
+    if (img) out.push({ kind: 'brand', id: id, thumb: img, logo_url: '' });
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    if (node[k] && typeof node[k] === 'object') collectSplashItems(node[k], out, depth + 1);
+  }
 }
 
 /* 只在字段已存在时替换，避免给元素塞出 App 不认识的结构 */
@@ -1293,10 +1888,7 @@ function handleBrandSplash(body) {
       if (!isHttpUrl(it.thumb)) continue;
       out.push({ kind: 'brand', id: it.id, thumb: it.thumb, logo_url: it.logo_url || '' });
     }
-    if (out.length) {
-      if (out.length > SPLASH_MAX) out = out.slice(0, SPLASH_MAX);
-      writeJSON(KEY_SPLASH_LIST, out);
-    }
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -1367,7 +1959,7 @@ function handleEventSplash(body) {
         back: isHttpUrl(e.back_image_url) ? e.back_image_url : ''
       });
     }
-    if (out.length) writeJSON(KEY_SPLASH_LIST, out);
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -1906,6 +2498,7 @@ function handleChronosPkg() {
   var url = ($request && $request.url) || '';
 
   if (TYPE === 'http-request') return handleBridge();
+  if (shouldLogApi(url)) logApi(url, $response && $response.body);
   if (/\/x\/resource\/show\/skin/.test(url)) return handleApply();
   /* 装扮商城/详情/收藏集走 /h5/mall/，收藏集的「主题套装」预览页走
      /blackboard/fe/suit-preview.html（独立活动页，不在 mall 下），
@@ -1917,19 +2510,20 @@ function handleChronosPkg() {
   ) {
     return handleInject();
   }
-  /* 评论 / 动态：换自己的评论装扮与头像挂件 */
-  if (/\/x\/v2\/reply/.test(url) || /\/x\/dynamic\//.test(url)) return handleCard();
-  /* 开屏动画 */
+  /* 开屏动画（品牌 / 活动 / 新版 business list+show） */
   if (/\/x\/v2\/splash\//.test(url)) return handleSplash();
   /* Chronos 开屏包（只能回放服务端发过的三件套） */
   if (/\/x\/chronos\//.test(url)) return handleChronos();
-  /* 收藏集开屏：结构未解，按字段名兜 */
+  /* 收藏集开屏 */
   if (/\/x\/vas\/dlc_act\/card\/splash_info/.test(url)) return handleCollectSplash();
-  /* 空间装扮 / 数字藏品空间背景：按字段名把组件图换掉 */
-  if (/\/x\/v2\/space\//.test(url) || /\/x\/vas\/digital\//.test(url)) return handleGarbFields();
-  /* gRPC 装扮服务（可选，需装 BiliSkinGrpc.sgmodule 并在 MITM 里加 grpc.biliapi.net） */
+  /* 评论 / 动态：换自己的评论装扮与头像挂件。
+     动态信息流走 x/polymer/web-dynamic（旧代码只写了 x/dynamic，所以动态一直没生效）。 */
+  if (/\/x\/(?:v2\/reply|dynamic|polymer\/web-dynamic|polymer\/v2\/dynamic)/.test(url)) return handleCard();
+  /* gRPC 装扮服务（需 MITM grpc.biliapi.net，第 9 条规则） */
   if (/^https?:\/\/grpc\.biliapi\.net\//.test(url)) return handleGrpc();
-  /* Chronos 包体本地缓存（可选，需装 BiliSkinCache.sgmodule） */
+  /* Chronos 包体本地缓存（第 10 条规则） */
   if (/\.cron(\?|$)/.test(url)) return handleChronosPkg();
-  return handleSniff();
+  /* 剩下的 garb / vas 一律挖候选：套装、收藏集兑换物、已拥有资产，
+     空间/我的页那类接口还会顺带按字段名换图。 */
+  return handleCandidates(url);
 })();

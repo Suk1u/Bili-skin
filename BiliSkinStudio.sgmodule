@@ -1,5 +1,5 @@
 #!name=B站装扮工作室
-#!desc=让哔哩哔哩 App 用上任意装扮（含付费、含抽奖、含开屏）。用法：在 App 里打开装扮商城、详情页、收藏集或主题套装预览页，左上角出现「应用装扮」，点一下即扫描当前页面的整套装扮（个性主题 / 加载动画 / 动态卡片 / 评论装扮 / 头像挂件 / 点赞特效 / 进度条 / 空间海报），单套直接注入、多套弹列表。面板还带详情页、分类筛选、ID 直输、藏馆、开屏、开售提醒、配置导出导入、设置与诊断。然后杀掉后台重进 App 生效。按钮可拖动。注意：已下架的装扮 B站已不再下发图片包，只有之前存过才能用。
+#!desc=让哔哩哔哩 App 用上任意装扮（含付费、含收藏集、含开屏）。用法：在 App 里打开装扮商城、详情页、收藏集或主题套装预览页，左上角出现「应用装扮」，点一下即扫描当前页面的整套装扮（个性主题 / 加载动画 / 动态卡片 / 评论装扮 / 头像挂件 / 点赞特效 / 进度条 / 空间海报），单套直接注入、多套弹列表。在 App 里逛收藏集、我的装扮也会自动记下来（保留 7 天），回到商城面板就能直接应用——头像挂件只能从收藏集兑换物或已拥有挂件里来，普通装扮套装本身不带挂件。面板还带详情页、分类筛选、ID 直输、藏馆、开屏（可填自定义开屏图）、开售提醒、配置导出导入、设置与诊断。然后杀掉后台重进 App 生效。按钮可拖动。注意：已下架的装扮 B站已不再下发图片包，只有之前存过才能用。
 #!author=海鸥 (Surge)
 #!category=哔哩哔哩
 #!icon=paintbrush
@@ -18,11 +18,15 @@ BiliSkinApply = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/re
 #    （/blackboard/fe/suit-preview.html）、收藏集大厅（/garb/collection-hall/*）。
 BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html|garb\/collection-hall),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 4. 嗅探：记下当前页面加载过的装扮（含整套 suit_items），供「应用装扮」按钮取用。
+# 4. 嗅探：记下这一路上加载过的装扮资源，供「应用装扮」按钮取用。三条来源：
+#    a) 套装详情里的整套 suit_items；
+#    b) 收藏集 collect_infos 里的 redeem_item_*（头像挂件 / 评论背景 / 主题套装…）；
+#    c) 已拥有资产列表 x/garb/user/asset/list、x/garb/user/pendant/list。
+#    b/c 会另存一份 7 天有效的「持久候选」，所以逛完收藏集再回面板也拿得到。
 BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 5. 评论装扮 / 头像挂件：把「自己的」member.user_sailing_v2.card_bg、member.user_sailing.pendant 换成装扮里的图。
-BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/|polymer\/web-dynamic\/|polymer\/v2\/dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）。
 BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
@@ -31,9 +35,11 @@ BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v
 #    包体有 RSA 签名（服务端私钥），伪造不了，所以这里只做「回放」。
 BiliSkinChronos = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/chronos\/,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 8. 空间装扮 / 数字藏品空间背景：不猜结构，按字段名把命中的组件图换掉
-#    （space_bg 的 image1..7_portrait、thumbup 的 image_ani、play_icon 的 *_png、挂件的 image_enhance）。
-BiliSkinSpace = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/space,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+# 8. 空间主页 / 我的页 / 数字藏品 / 我的装扮设置：换自己的头像挂件、空间海报、卡片。
+#    不猜结构，按字段名把命中的组件图换掉（挂件的 pendantUrl / pendant_url /
+#    image_enhance、空间海报的 image1..9_portrait、点赞的 image_ani、
+#    进度条的 *_png、加载动画的 loading_url）。
+BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 9. gRPC 装扮服务（SailingEquipMulti / UserCardMulti）：改 protobuf 里自己的那条。
 #    binary-body-mode=true 才能改二进制。pattern 只圈 garb 相关方法，别的 gRPC 流量不碰。

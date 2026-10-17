@@ -100,28 +100,41 @@ App 拿到它就去下载那个 ZIP（里面是 `head_bg.jpg`、`tail_icon_*.png
 
 | 环节 | 实现 |
 |---|---|
-| 嗅探 | 拦截 `api.bilibili.com/x/garb/*` 与 `x/vas/*`，把当前页加载过的装扮（整套 `suit_items`）记进本地 |
-| 注入 | 在 H5 页面注入「应用装扮」按钮，点击时汇总候选并写进 Surge |
+| 嗅探 | 拦截 `api.bilibili.com/x/garb/*` 与 `x/vas/*`，把这一路见过的装扮资源记进本地。三个来源：整套 `suit_items`、收藏集 `collect_infos[].redeem_item_*`、已拥有资产 `x/garb/user/asset/list` / `x/garb/user/pendant/list`。后两类另存一份 **7 天**的「持久候选」，所以在 App 原生页逛完收藏集，回到商城面板还能直接应用 |
+| 注入 | 在 H5 页面注入「应用装扮」按钮，点击时汇总候选（本页 + 最近 30 分钟 + 7 天持久）并写进 Surge |
 | 生效·主题 | 拦截 `x/resource/show/skin`，用存好的配置替换 `user_equip` |
-| 生效·加载动画 | 同一条 `x/resource/show/skin` 响应，替换 `load_equip` |
-| 生效·评论装扮 / 挂件 | 拦截评论 / 动态响应，替换**自己**的 `member.user_sailing_v2.card_bg`、`member.user_sailing.pendant` |
-| 生效·开屏动画 | 拦截 `x/v2/splash/brand/list` 与 `x/v2/splash/event/list2`，把选中的开屏图插进 `list` / `show` 或元素图字段（活动开屏带 md5 校验，模块会先算好） |
+| 生效·加载动画 | 同一条 `x/resource/show/skin` 响应，替换 `load_equip`；空间页 / 我的页里的 `loading_url` 也按字段名换 |
+| 生效·评论装扮 / 挂件 | 拦截评论 / 动态响应（含 `x/polymer/web-dynamic` 信息流的 `modules.module_author`），替换**自己**的 `member.user_sailing_v2.card_bg`、`member.user_sailing.pendant`。**注意：普通装扮套装里没有头像挂件**，挂件只能来自收藏集兑换物或已拥有挂件列表 |
+| 生效·开屏动画 | 拦截 `x/v2/splash/brand/list` 与 `x/v2/splash/event/list2`，把选中的开屏图插进 `list` / `show` 或元素图字段（活动开屏带 md5 校验，模块会先算好）；设置里还能直接填「自定义开屏图」 |
 | 生效·Chronos 开屏 | 拦截 `x/chronos/package/obtain`，把响应换成捕获过的 `{url, md5, sign}`（包体有 RSA 签名，只能回放） |
-| 生效·空间海报 / 点赞 / 进度条 | 拦截空间响应，**按字段名**把 `image1..7_portrait`、`image_ani`、`static_icon_image` 等换成装扮里的图 |
-| 设置 / 诊断 / 导出导入 | 桥的 `prefs` `diag` `export` `import` `equips/*` `reminders/*` 路由，全部走假响应不出网 |
+| 生效·空间海报 / 点赞 / 进度条 | 拦截空间响应，**按字段名**把 `image1..9_portrait`、`image_ani`、`static_icon_image` 等换成装扮里的图 |
+| 设置 / 诊断 / 导出导入 | 桥的 `prefs` `diag` `export` `import` `equips/*` `reminders/*` `found` 路由，全部走假响应不出网 |
 | 生效·gRPC | 改 `grpc.biliapi.net` 上 `bilibili.vas.garb.service` 的 protobuf，只改自己那条 |
 | 通信 | H5 与 Surge 通过 `app.bilibili.com/x/surge-skin/*` 对话——Surge 直接返回假响应，请求不出网 |
 
 ## 已知限制
 
-**收藏集（抽奖）的装扮能推出来了。** 收藏集详情接口 `x/vas/dlc_act/lottery_home_detail`
-里的 `collect_list.collect_infos[]` 带 `redeem_item_type` / `redeem_item_id`——
-**type 4 的 `redeem_item_id` 就是装扮 id**。模块现在会读 URL 上的 `act_id` / `lottery_id`，
-调这个接口把 id 解析成普通装扮。
+**收藏集里的东西现在会自动记下来。** 收藏集详情接口 `x/vas/dlc_act/lottery_home_detail`
+的 `collect_list.collect_infos[]` 带 `redeem_item_*` 一组字段。实测（`act_id=114713&lottery_id=114714`）：
+
+| `redeem_item_type` | `redeem_item_type_name` | 处理 |
+|---|---|---|
+| 1001 | 评论背景 | 用 `redeem_item_image` 当 `card_bg` |
+| 3 | **头像挂件** | 用 `redeem_item_image` 当 `pendant` |
+| 1 | 典藏卡 | 不是装扮组件，丢弃 |
+| 4 / 5 | 主题套装 | `redeem_item_id` 是装扮 id，拉 `suit/detail` 解析 |
+
+**type 数字各活动不统一**，所以按 `redeem_item_type_name` 中文名映射，不猜数字。
+抓到的候选会存 **7 天**，在 App 原生页逛完收藏集再回商城面板就能直接应用。
 
 - 收藏集的**「主题套装」预览页**（`blackboard/fe/suit-preview.html`）→ 按钮直接能用 ✅
-- 收藏集的**卡片主页**（`h5/mall/digital-card/home`）→ 页面数据里没有 `act_id` 时仍拿不到，
-  点「浏览全部装扮」按套装名字搜即可
+- 收藏集的**卡片主页**（`h5/mall/digital-card/home`）→ 页面数据里没有 `act_id` 时靠
+  Surge 侧嗅探兜底（原生页逛过就有）✅
+
+**头像挂件（头像框）为什么以前一直不生效。** 对在售装扮抽样 60 套，
+`suit_items` 的键并集只有 `card / card_bg / emoji_package / loading / play_icon / skin / space_bg / thumbup`
+—— **没有 `pendant`**。挂件是独立资产，所以模块现在从收藏集兑换物、
+`x/garb/user/pendant/list`、`x/garb/user/asset/list` 三处抓，抓成「只有挂件一个组件」的候选再注入。
 
 **目录接口用的是 `x/garb/v2/mall/partition/item/list?part_id=6`，全站 3374 套**；
 `x/garb/mall/suit/all` 那个接口只有 464 套，是残缺的子集，别用。

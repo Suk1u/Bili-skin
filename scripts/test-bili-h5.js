@@ -816,6 +816,154 @@ t('构建/注入的 payload 可独立执行', function () {
   eq(env.__BSS_API__.toEquip(DETAIL).id, 67790, 'works after round-trip through dist');
 });
 
+/* ===== 收藏集兑换物 -> 单组件候选（实机反馈后修） ===== */
+
+const COLLECT_DETAIL = {
+  code: 0,
+  data: {
+    lottery_id: 114714,
+    name: '日光拾集',
+    collect_list: {
+      collect_infos: [
+        {
+          collect_id: 0,
+          redeem_item_type: 1001,
+          redeem_item_id: '',
+          redeem_item_name: '小辞炒糍粑',
+          redeem_item_image: 'https://i0.hdslb.com/bfs/garb/cardbg.png',
+          redeem_item_type_name: '评论背景'
+        },
+        {
+          collect_id: 114720,
+          redeem_item_type: 3,
+          redeem_item_id: '1790565160001',
+          redeem_item_name: '日光拾集·头像挂件',
+          redeem_item_image: 'https://i0.hdslb.com/bfs/garb/pendant.png',
+          redeem_item_type_name: '头像挂件'
+        },
+        {
+          collect_id: 114722,
+          redeem_item_type: 1,
+          redeem_item_id: '1790737537002',
+          redeem_item_name: '典藏卡·无敌雷兹大王',
+          redeem_item_image: 'https://i0.hdslb.com/bfs/garb/card.png',
+          redeem_item_type_name: '典藏卡'
+        }
+      ]
+    }
+  }
+};
+
+t('kindOfTypeName/按中文类型名认组件（type 数字各活动不统一）', function () {
+  eq(API.kindOfTypeName('头像挂件'), 'pendant', '头像挂件');
+  eq(API.kindOfTypeName('评论背景'), 'card_bg', '评论背景');
+  eq(API.kindOfTypeName('空间头图'), 'space_bg', '空间头图');
+  eq(API.kindOfTypeName('加载动画'), 'loading', '加载动画');
+  eq(API.kindOfTypeName('典藏卡'), '', '典藏卡不是组件');
+  eq(API.kindOfTypeName(''), '', '空串');
+});
+
+t('mapRedeemComponents/挂件与评论背景拼成单组件候选，典藏卡只留 id', function () {
+  const out = API.mapRedeemComponents(COLLECT_DETAIL);
+  eq(out.length, 3, '三条');
+
+  const pend = out.filter(function (x) {
+    return x.components && x.components.pendant;
+  })[0];
+  assert(!!pend, '有挂件候选');
+  eq(pend.components.pendant.url, 'https://i0.hdslb.com/bfs/garb/pendant.png', '挂件图');
+  eq(pend.components.pendant.image, 'https://i0.hdslb.com/bfs/garb/pendant.png', 'image 也带上');
+  eq(pend.preview, 'https://i0.hdslb.com/bfs/garb/pendant.png', 'preview');
+  eq(pend.partial, true, '标记为单组件');
+
+  const cbg = out.filter(function (x) {
+    return x.components && x.components.card_bg;
+  })[0];
+  assert(!!cbg, '有评论背景候选');
+  eq(cbg.components.card_bg.url, 'https://i0.hdslb.com/bfs/garb/cardbg.png', '评论背景图');
+
+  const need = out.filter(function (x) {
+    return x.needResolve;
+  })[0];
+  assert(!!need, '典藏卡留 id');
+  eq(String(need.id), '1790737537002', 'id 对');
+  eq(need.preview, 'https://i0.hdslb.com/bfs/garb/card.png', '预览图仍保留');
+});
+
+t('mapRedeemComponents/兼容旧版 collect_list 数组', function () {
+  const raw = {
+    code: 0,
+    data: {
+      collect_list: [
+        {
+          redeem_item_type: 3,
+          redeem_item_id: '123',
+          redeem_item_name: '挂件',
+          redeem_item_image: 'https://i0.hdslb.com/p.png',
+          redeem_item_type_name: '头像挂件'
+        }
+      ]
+    }
+  };
+  const out = API.mapRedeemComponents(raw);
+  eq(out.length, 1, '一条');
+  assert(!!out[0].components.pendant, '拼出挂件');
+});
+
+t('COMPONENTS/包含头像挂件且有中文标签', function () {
+  assert(API.COMPONENTS.indexOf('pendant') >= 0, 'pendant 在 COMPONENTS 里');
+  eq(API.COMPONENT_LABEL.pendant, '头像挂件', '标签');
+});
+
+t('componentOf/pendant 取 image，退到 image_enhance', function () {
+  const a = API.componentOf('pendant', {
+    item_id: 1,
+    name: 'p',
+    properties: { image: 'https://i0.hdslb.com/a.png' }
+  });
+  eq(a.url, 'https://i0.hdslb.com/a.png', 'image');
+  const b = API.componentOf('pendant', {
+    item_id: 2,
+    name: 'p2',
+    properties: { image_enhance: 'https://i0.hdslb.com/b.png' }
+  });
+  eq(b.url, 'https://i0.hdslb.com/b.png', 'image_enhance 兜底');
+  eq(b.enhance, 'https://i0.hdslb.com/b.png', 'enhance 也带上');
+});
+
+t('mergeById/保留只有 id 的收藏集候选', function () {
+  const full = [
+    {
+      id: 1,
+      package_url: 'https://i0.hdslb.com/z.zip',
+      components: { skin: { url: 'https://i0.hdslb.com/z.zip' } }
+    }
+  ];
+  const partial = [
+    {
+      id: 2,
+      needResolve: true,
+      components: {}
+    },
+    {
+      id: 3,
+      components: { pendant: { url: 'https://i0.hdslb.com/p.png' } }
+    },
+    { id: 4, components: {} }
+  ];
+  const out = API.mergeById(full, partial);
+  eq(out.length, 3, '1+2+3，空壳 4 丢掉: ' + out.length);
+  eq(out[1].id, 2, 'needResolve 留着');
+  eq(out[2].id, 3, '单组件留着');
+});
+
+t('componentBadges/挂件也会显示角标', function () {
+  const b = API.componentBadges({
+    components: { skin: { url: 'x' }, pendant: { url: 'y' } }
+  });
+  eq(b.indexOf('头像挂件') >= 0, true, '有头像挂件角标');
+});
+
 /* ---------- 运行 ---------- */
 
 (async function () {

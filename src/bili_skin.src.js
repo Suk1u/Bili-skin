@@ -14,8 +14,14 @@
  *   loading    加载动画  -> x/resource/show/skin 的 data.load_equip
  *   card       动态卡片  -> member.user_sailing_v2.card_bg（动态/评论响应）
  *   card_bg    评论装扮  -> member.user_sailing_v2.card_bg
- *   pendant    头像挂件  -> member.user_sailing.pendant / member.pendant
+ *   pendant    头像挂件  -> member.user_sailing.pendant / member.pendant / 我的页 pendantUrl
  *   splash     开屏动画  -> x/v2/splash/brand/list 的 list/show
+ *
+ * ⚠️ 头像挂件（pendant）不在 suit_items 里 —— 对 60 套在售装扮实测，
+ *    suit_items 的键只有 skin/loading/card/card_bg/thumbup/play_icon/space_bg/emoji_package。
+ *    挂件是**独立资产**：收藏集兑换物（redeem_item_type_name = 头像挂件）、
+ *    x/garb/user/pendant/list、x/garb/user/asset/list 才会出现。
+ *    所以 handleCandidates 会把这些来源单独抓成「只有某个组件」的候选。
  *
  * 本文件由 scripts/build-bili.js 从 src/bili_skin.src.js 生成，请勿直接改 bili_skin.js。
  */
@@ -23,6 +29,7 @@
 var KEY_EQUIP = 'BiliSkinEquip';
 var KEY_GALLERY = 'BiliSkinGallery';
 var KEY_SEEN = 'BiliSkinSeen';
+var KEY_FOUND = 'BiliSkinFound';
 var KEY_SELF = 'BiliSkinSelf';
 var KEY_SPLASH = 'BiliSkinSplash';
 var KEY_SPLASH_LIST = 'BiliSkinSplashList';
@@ -31,9 +38,12 @@ var KEY_CHRONOS_LIST = 'BiliSkinChronosList';
 var KEY_PREFS = 'BiliSkinPrefs';
 var KEY_EQUIPS = 'BiliSkinEquips';
 var KEY_REMINDERS = 'BiliSkinReminders';
+var KEY_APILOG = 'BiliSkinApiLog';
 var GALLERY_MAX = 300;
-var SEEN_MAX = 40;
-var SEEN_TTL = 600000;
+var SEEN_MAX = 60;
+var SEEN_TTL = 1800000; /* 30 分钟：在 App 里逛完收藏集再回面板也还看得到 */
+var FOUND_MAX = 80; /* 持久候选（收藏集 / 资产列表抓到的），7 天有效 */
+var FOUND_TTL = 604800000;
 var SPLASH_MAX = 30;
 
 /* 默认设置项。H5 侧可以改，改完存 KEY_PREFS。 */
@@ -72,13 +82,16 @@ var FIELD_ALIAS = {
   middle_png: ['middle_png', 'middlePng'],
   image_enhance: ['image_enhance', 'imageEnhance'],
   image_enhance_frame: ['image_enhance_frame', 'imageEnhanceFrame'],
-  card_bg_with_focus: ['card_bg_with_focus', 'cardBgWithFocus']
+  card_bg_with_focus: ['card_bg_with_focus', 'cardBgWithFocus'],
+  /* 头像挂件：我的页 HeaderViewModel 叫 pendantUrl；挂件对象里叫 image / image_enhance；
+     直播那套叫 pendant_pic / pendantImageEnhance。全列上，App 改名只改这张表。 */
+  pendant: ['image', 'url', 'image_enhance', 'pendant_pic', 'pendant_image', 'pendantImage']
 };
 
 /* 字段名 -> 装扮组件。凡是响应里出现这些字段，就把地址换成对应组件的图。
    这样不依赖响应结构——App 把字段放哪一层都能命中。 */
 var FIELD_COMPONENT = {
-  /* 空间海报 */
+  /* 空间海报（实测 properties 里到 image9 都有，早期版本只列到 7） */
   image1_portrait: 'space_bg',
   image1_landscape: 'space_bg',
   image2_portrait: 'space_bg',
@@ -93,6 +106,10 @@ var FIELD_COMPONENT = {
   image6_landscape: 'space_bg',
   image7_portrait: 'space_bg',
   image7_landscape: 'space_bg',
+  image8_portrait: 'space_bg',
+  image8_landscape: 'space_bg',
+  image9_portrait: 'space_bg',
+  image9_landscape: 'space_bg',
   fan_no_image: 'space_bg',
   /* 点赞特效 */
   image_ani: 'thumbup',
@@ -107,8 +124,41 @@ var FIELD_COMPONENT = {
   /* 挂件动态形态 */
   image_enhance: 'pendant',
   image_enhance_frame: 'pendant',
+  /* 加载动画：除了 x/resource/show/skin 的 load_equip，
+     空间页 / 我的页 / 资产列表里也会出现 loading_url —— 一律换掉。
+     （旧版只有 load_equip 一条路，所以加载动画只在视频页下拉刷新里出现。） */
+  loading_url: 'loading',
+  loadingUrl: 'loading',
+  /* 头像挂件（扁平字符串字段）：
+     「我的」页 x/v2/account/mine 的 HeaderViewModel 用 pendantUrl */
+  pendant_url: 'pendant',
+  pendantUrl: 'pendant',
+  pendant_image: 'pendant',
+  pendantImage: 'pendant',
+  pendant_pic: 'pendant',
+  pendantImageEnhance: 'pendant',
+  pendantEnhance: 'pendant',
+  pendantBgImageUrl: 'pendant',
   /* 卡片聚焦态 */
   card_bg_with_focus: 'card'
+};
+
+/* 对象字段：命中后把「对象里的图片字段」换掉。
+   空间页 / 我的页的挂件、卡片是对象（{image, image_enhance, name, pid...}），
+   不是扁平字符串，所以上面那张表命中不了，得单独处理。 */
+var FIELD_OBJECT = {
+  pendant: 'pendant',
+  user_pendant: 'pendant',
+  userPendant: 'pendant',
+  fans_pendant: 'pendant',
+  fansPendant: 'pendant',
+  avatar_pendant: 'pendant',
+  card_bg: 'card_bg',
+  cardBg: 'card_bg',
+  card_bg_with_focus: 'card',
+  cardBgWithFocus: 'card',
+  space_bg: 'space_bg',
+  spaceBg: 'space_bg'
 };
 
 /* 由构建脚本内联的 H5 页面脚本 */
@@ -160,16 +210,26 @@ function isHttpUrl(u) {
   return typeof u === 'string' && /^https?:\/\//.test(u);
 }
 
-/* 主题皮肤（package_url）或加载动画（loading_url）任一存在即算有效配置 */
+/* 主题皮肤（package_url）或加载动画（loading_url）任一存在即算有效配置。
+   收藏集 / 资产列表抓到的「单组件」候选（只有头像挂件、只有评论装扮…）没有
+   package_url，所以这里也认「任意组件带图」的形态。 */
 function validEquip(e) {
   if (!e || typeof e !== 'object') return false;
   if (isHttpUrl(e.package_url)) return true;
+  if (isHttpUrl(e.loading_url)) return true;
   var c = e.components;
   if (c && typeof c === 'object') {
     if (c.skin && isHttpUrl(c.skin.package_url || c.skin.url)) return true;
     if (c.loading && isHttpUrl(c.loading.loading_url || c.loading.url)) return true;
+    for (var k in c) {
+      if (!Object.prototype.hasOwnProperty.call(c, k)) continue;
+      var v = c[k];
+      if (!v || typeof v !== 'object') continue;
+      if (isHttpUrl(v.url) || isHttpUrl(v.image) || isHttpUrl(v.package_url) || isHttpUrl(v.loading_url)) {
+        return true;
+      }
+    }
   }
-  if (e.loading_url && isHttpUrl(e.loading_url)) return true;
   return false;
 }
 
@@ -181,6 +241,37 @@ function pathOf(url) {
 
 function queryOf(url) {
   return String(url || '').split('?')[1] || '';
+}
+
+/* 这些接口的响应结构还没完全解出（开屏 / 空间 / 我的页 / 收藏集 / 资产），
+   记下 URL + 响应样本，方便从 H5 面板导出定位。范围尽量宽，
+   因为「为什么没生效」往往就差一条响应没看到。 */
+function shouldLogApi(url) {
+  return /\/x\/(?:v2\/splash|v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/dlc_act|vas\/digital|garb\/user|garb\/skin|garb\/right|garb\/digital|garb\/mall|chronos|resource\/show\/skin)/.test(
+    url
+  );
+}
+
+function logApi(url, body) {
+  try {
+    var p = pathOf(url);
+    if (!p) return;
+    var list = readJSON(KEY_APILOG, []);
+    if (!(list instanceof Array)) list = [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].path === p) list.splice(i, 1);
+    }
+    var s = typeof body === 'string' ? body : '';
+    list.unshift({
+      ts: Date.now(),
+      path: p,
+      q: queryOf(url).slice(0, 200),
+      len: s.length,
+      sample: s.length > 3000 ? s.slice(0, 3000) : s
+    });
+    if (list.length > 40) list = list.slice(0, 40);
+    writeJSON(KEY_APILOG, list);
+  } catch (e) {}
 }
 
 function intParam(qs, name) {
@@ -414,7 +505,7 @@ function compsOf(e) {
   var c = (e && e.components) || {};
   var out = {};
   function pick(kind, url) {
-    if (isHttpUrl(url)) out[kind] = url;
+    if (isHttpUrl(url) && !out[kind]) out[kind] = url;
   }
   var skin = c.skin || {};
   var loading = c.loading || {};
@@ -429,10 +520,12 @@ function compsOf(e) {
   pick('loading', loading.loading_url || loading.url);
   pick('card', card.image || card.url || cardbg.image);
   pick('card_bg', cardbg.image || cardbg.url || card.image);
-  pick('pendant', pend.image || pend.url);
-  pick('thumbup', thumb.image_ani || thumb.url);
-  pick('play_icon', play.static_icon_image || play.url);
-  pick('space_bg', space.url || space.image1_portrait);
+  /* 挂件：静态图优先，拿不到就退到动态形态那张 */
+  pick('pendant', pend.image || pend.url || pend.image_enhance || pend.imageEnhance);
+  pick('pendant', pend.enhance);
+  pick('thumbup', thumb.image_ani || thumb.image_ani_cut || thumb.url);
+  pick('play_icon', play.static_icon_image || play.url || play.middle_png);
+  pick('space_bg', space.url || space.image1_portrait || space.image1_landscape);
   if (isHttpUrl(pend.image_enhance)) out.pendant = out.pendant || pend.image_enhance;
   return out;
 }
@@ -467,32 +560,139 @@ function rewriteByField(node, comps, depth) {
 }
 
 /* 只按字段名命中就换图 —— 用在空间装扮、收藏集开屏这类「结构不明」的响应上。 */
-function handleGarbFields() {
-  var equip = readJSON(KEY_EQUIP, null);
-  if (!validEquip(equip)) return $done({});
-  var comps = compsOf(equip);
-  if (!comps) return $done({});
+/* 递归换图：字符串字段（FIELD_COMPONENT）+ 对象字段（FIELD_OBJECT）。
+   只用于「一定/大概率是自己的数据」的页面（空间主页 / 我的页 / 数字藏品）。 */
+function rewriteProfile(node, comps, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return 0;
+  var n = 0;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) n += rewriteProfile(node[i], comps, depth + 1);
+    return n;
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
 
-  var body = $response && $response.body;
-  if (typeof body !== 'string' || body.length < 8 || body.length > 4194304) return $done({});
-
-  var hit = false;
-  for (var f in FIELD_COMPONENT) {
-    if (body.indexOf(f) >= 0) {
-      hit = true;
-      break;
+    /* 1) 扁平字符串字段：值是 URL 就直接换 */
+    var kind = FIELD_COMPONENT[k];
+    if (kind && typeof v === 'string' && /^https?:\/\//.test(v) && comps[kind] && v !== comps[kind]) {
+      node[k] = comps[kind];
+      n++;
+      continue;
     }
-  }
-  if (!hit) return $done({});
 
-  var json;
-  try {
-    json = JSON.parse(body);
-  } catch (e) {
-    return $done({});
+    /* 2) 对象字段（挂件 / 卡片 / 空间背景）：先把里面按字段名换一遍 */
+    var okind = FIELD_OBJECT[k];
+    if (okind && v && typeof v === 'object' && !(v instanceof Array) && comps[okind]) {
+      var sub = rewriteProfile(v, comps, depth + 1);
+      if (sub) {
+        n += sub;
+        continue;
+      }
+      /* 里面没有可识别的字段名：直接换对象的图片字段 */
+      var img = comps[okind];
+      var imgKeys = ['image', 'url'];
+      for (var q = 0; q < imgKeys.length; q++) {
+        var ik = imgKeys[q];
+        if (typeof v[ik] === 'string' && /^https?:\/\//.test(v[ik]) && v[ik] !== img) {
+          v[ik] = img;
+          n++;
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (v && typeof v === 'object') n += rewriteProfile(v, comps, depth + 1);
   }
-  if (!rewriteByField(json, comps, 0)) return $done({});
-  $done({ body: JSON.stringify(json) });
+  return n;
+}
+
+/* 从 space / mine 响应里取「这个页面的主人」的 mid */
+function pickOwnerMid(json) {
+  var d = json && json.data;
+  if (!d || typeof d !== 'object') return '';
+  var cands = [d.mid, d.uid];
+  var c = d.card;
+  if (c && typeof c === 'object') cands.push(c.mid, c.mid_str, c.uid);
+  for (var i = 0; i < cands.length; i++) {
+    var x = cands[i];
+    if (x != null && String(x) !== '' && String(x) !== '0') return String(x);
+  }
+  return '';
+}
+
+/* 这些接口只可能返回「自己」的数据 */
+var MINE_RE = /\/x\/(?:v2\/account\/mine|member\/app\/pendant|garb\/user|garb\/v3\/user|garb\/skin|garb\/mall_v2\/mine)/;
+/* 需要「按字段名换图」的接口：空间主页 / 我的页 / 数字藏品 / 我的装扮设置 */
+var PROFILE_RE = /\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin)/;
+
+/* 空间主页 / 我的页 / 数字藏品 / 我的装扮：换自己的挂件、空间海报、卡片。
+   「我的」页一定是自己；space 页用响应里的 mid（或 URL 上的 mid/vmid）判断，
+   避免改到别人。返回 true 表示响应被改过（调用方负责 $done）。 */
+function rewriteProfileBody(url, json) {
+  var equip = readJSON(KEY_EQUIP, null);
+  if (!validEquip(equip)) return false;
+  var comps = compsOf(equip);
+  if (!comps) return false;
+
+  var isMine = MINE_RE.test(url);
+
+  /* 「我的」页一定是自己：顺手把 mid 学下来，之后 space 页才知道该改谁 */
+  var ownerMid = pickOwnerMid(json);
+  if (isMine && ownerMid) {
+    var cur = readJSON(KEY_SELF, null);
+    if (!cur || String(cur.mid) !== ownerMid) writeJSON(KEY_SELF, { mid: ownerMid });
+  }
+
+  /* 不是「我的」页：知道自己的 mid 时才做归属校验；
+     不知道 mid 就放行（不然「我的」空间会看起来完全没装扮）。
+     mid 由「我的」页 / H5 面板上报，正常用一次就学到了。 */
+  if (!isMine) {
+    var self = readJSON(KEY_SELF, null);
+    var selfMid = self && self.mid ? String(self.mid) : '';
+    var qMid = '';
+    var qm = /[?&](?:vmid|mid)=(\d+)/.exec('?' + queryOf(url));
+    if (qm) qMid = qm[1];
+    var who = ownerMid || qMid;
+    if (selfMid && who && who !== selfMid) return false;
+  }
+
+  return rewriteProfile(json, comps, 0) > 0;
+}
+
+/* 开屏候选合并写入。
+   以前每条通道（品牌 / 活动 / business / 收藏集）都是直接覆盖，
+   谁最后响应谁说了算 —— 结果往往只剩一堆没用的，自己想要的反而被冲掉。
+   现在按 kind#id 去重后合并，最多留 SPLASH_MAX 条。 */
+function mergeSplashList(items) {
+  if (!items || !items.length) return 0;
+  var fresh = [];
+  var keys = {};
+  var i;
+  for (i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!it || !isHttpUrl(it.thumb)) continue;
+    var k = String(it.kind || 'brand') + '#' + String(it.id);
+    if (keys[k]) continue;
+    keys[k] = 1;
+    fresh.push(it);
+  }
+  if (!fresh.length) return 0;
+
+  var cur = readJSON(KEY_SPLASH_LIST, []);
+  if (!(cur instanceof Array)) cur = [];
+  var keep = [];
+  for (i = 0; i < cur.length; i++) {
+    var c = cur[i];
+    if (!c || !isHttpUrl(c.thumb)) continue;
+    if (keys[String(c.kind || 'brand') + '#' + String(c.id)]) continue;
+    keep.push(c);
+  }
+  var out = fresh.concat(keep);
+  if (out.length > SPLASH_MAX) out = out.slice(0, SPLASH_MAX);
+  writeJSON(KEY_SPLASH_LIST, out);
+  return out.length;
 }
 
 /* 收藏集开屏（x/vas/dlc_act/card/splash_info）：结构未解，按字段名兜。
@@ -517,7 +717,7 @@ function handleCollectSplash() {
     for (var i = 0; i < urls.length && out.length < SPLASH_MAX; i++) {
       out.push({ kind: 'collect', id: i + 1, thumb: urls[i] });
     }
-    if (out.length) writeJSON(KEY_SPLASH_LIST, out);
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -753,12 +953,23 @@ function handleBridge() {
           : null,
         selfMid: (selfRec && selfRec.mid) || '',
         seen: seenList instanceof Array ? seenList.length : 0,
+        found: (function () {
+          var f = readJSON(KEY_FOUND, []);
+          return f instanceof Array ? f.length : 0;
+        })(),
         gallery: galList instanceof Array ? galList.length : 0,
         chronos: chList instanceof Array ? chList.length : 0,
         splash: readJSON(KEY_SPLASH, null) ? 1 : 0,
         prefs: readPrefs()
       }
     });
+  }
+
+  /* ---- 接口日志（定位响应结构用） ---- */
+  if (name === 'apilog') return reply({ code: 0, data: readJSON(KEY_APILOG, []) });
+  if (name === 'apilog/clear') {
+    $persistentStore.write('', KEY_APILOG);
+    return reply({ code: 0 });
   }
 
   /* ---- 导出 / 导入（换设备用） ---- */
@@ -897,6 +1108,26 @@ function handleBridge() {
     return reply({ code: 0 });
   }
 
+  /* 持久候选：在 App 原生页（收藏集 / 资产列表）里抓到的、只有单个组件的东西。
+     面板打开时不一定还在 seen 的 30 分钟窗口里，所以单独一条。 */
+  if (name === 'found') {
+    var fl = readJSON(KEY_FOUND, []);
+    if (!(fl instanceof Array)) fl = [];
+    var now2 = Date.now();
+    var fo = [];
+    for (var fi = 0; fi < fl.length; fi++) {
+      var fr = fl[fi];
+      if (!fr || !validEquip(fr.equip)) continue;
+      if (!fr.ts || now2 - fr.ts > FOUND_TTL) continue;
+      fo.push(fr.equip);
+    }
+    return reply({ code: 0, data: fo });
+  }
+  if (name === 'found/clear') {
+    $persistentStore.write('', KEY_FOUND);
+    return reply({ code: 0 });
+  }
+
   return reply({ code: 0, data: { ok: true } });
 }
 
@@ -997,6 +1228,7 @@ var COMPONENTS = [
   'loading',
   'card',
   'card_bg',
+  'pendant',
   'thumbup',
   'play_icon',
   'space_bg',
@@ -1033,6 +1265,9 @@ function componentOf(kind, entry) {
     out.md5 = p.package_md5 || '';
   } else if (kind === 'space_bg') {
     out.url = p.image1_portrait || p.image1_landscape || p.image || '';
+  } else if (kind === 'pendant') {
+    out.url = p.image || p.image_enhance || p.pendant_pic || p.preview || '';
+    out.enhance = p.image_enhance || p.imageEnhance || '';
   } else {
     out.url = p.image || p.image_ani || p.static_icon_image || p.image_preview || p.preview || '';
   }
@@ -1089,29 +1324,15 @@ function harvest(node, out, depth) {
   }
 }
 
-function handleSniff() {
-  var body = $response && $response.body;
-  if (typeof body !== 'string') return $done({});
-  if (body.indexOf('suit_items') < 0) return $done({});
-
-  var json;
-  try {
-    json = JSON.parse(body);
-  } catch (e) {
-    return $done({});
-  }
-
-  var found = [];
-  harvest(json, found, 0);
-  if (!found.length) return $done({});
-
+/* 把抓到的候选写进「本页」存储（短 TTL，面板按 since 过滤）。 */
+function pushSeen(found) {
+  if (!found || !found.length) return 0;
   var now = Date.now();
   var list = readJSON(KEY_SEEN, []);
   if (!(list instanceof Array)) list = [];
   list = list.filter(function (x) {
     return x && x.ts && now - x.ts <= SEEN_TTL;
   });
-
   for (var i = 0; i < found.length; i++) {
     var e = found[i];
     for (var j = list.length - 1; j >= 0; j--) {
@@ -1120,8 +1341,284 @@ function handleSniff() {
     list.unshift({ ts: now, equip: e });
   }
   if (list.length > SEEN_MAX) list = list.slice(0, SEEN_MAX);
-
   writeJSON(KEY_SEEN, list);
+  return found.length;
+}
+
+/* 把抓到的候选写进「持久候选」存储（7 天）。
+   收藏集是在 App 原生页里逛的，等回到 H5 面板时 enterTs 早就过去了，
+   所以这条必须另外存，否则永远「没获取到」。 */
+function pushFound(found) {
+  if (!found || !found.length) return 0;
+  var now = Date.now();
+  var list = readJSON(KEY_FOUND, []);
+  if (!(list instanceof Array)) list = [];
+  list = list.filter(function (x) {
+    return x && x.ts && now - x.ts <= FOUND_TTL;
+  });
+  for (var i = 0; i < found.length; i++) {
+    var e = found[i];
+    for (var j = list.length - 1; j >= 0; j--) {
+      if (list[j].equip && String(list[j].equip.id) === String(e.id)) list.splice(j, 1);
+    }
+    list.unshift({ ts: now, equip: e });
+  }
+  if (list.length > FOUND_MAX) list = list.slice(0, FOUND_MAX);
+  writeJSON(KEY_FOUND, list);
+  return found.length;
+}
+
+/* ---------- 收藏集兑换物 ----------
+   收藏集（抽卡 / 数字藏品）里的东西不是 suit：响应的 collect_infos 里是
+   redeem_item_* 一组字段。实测条目（act_id=114713&lottery_id=114714）：
+     {redeem_item_type: 3,    redeem_item_type_name: "头像挂件", redeem_item_id: "1790565160001", ...}
+     {redeem_item_type: 1001, redeem_item_type_name: "评论背景", redeem_item_id: "", ...}
+     {redeem_item_type: 1,    redeem_item_type_name: "典藏卡",   redeem_item_id: "1790737537002", ...}
+   type 数字各活动不统一（见过 1/3/4/5/1001），所以**按名字**映射组件最稳。
+   这里只做「不花时间」的事：有图的直接拼成单组件候选；
+   只有 id 的（主题套装那种）标 needResolve，交给 H5 面板去拉详情——
+   免得为了几个请求把 App 的收藏集页卡住。 */
+
+var TYPE_NAME_COMPONENT = {
+  头像挂件: 'pendant',
+  挂件: 'pendant',
+  粉丝挂件: 'pendant',
+  评论背景: 'card_bg',
+  评论装扮: 'card_bg',
+  动态卡片: 'card',
+  卡片: 'card',
+  空间头图: 'space_bg',
+  空间海报: 'space_bg',
+  加载动画: 'loading',
+  进度条: 'play_icon',
+  点赞效果: 'thumbup',
+  点赞: 'thumbup',
+  个性主题: 'skin',
+  主题: 'skin'
+};
+
+function kindOfTypeName(name) {
+  var s = String(name || '').trim();
+  if (!s) return '';
+  if (TYPE_NAME_COMPONENT[s]) return TYPE_NAME_COMPONENT[s];
+  for (var k in TYPE_NAME_COMPONENT) {
+    if (s.indexOf(k) >= 0) return TYPE_NAME_COMPONENT[k];
+  }
+  return '';
+}
+
+/* 递归找出所有 redeem 条目（不依赖外层包装键名） */
+function collectRedeems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectRedeems(node[i], out, depth + 1);
+    return;
+  }
+  if (node.redeem_item_name || node.redeem_item_id || node.redeem_item_type_name) {
+    out.push({
+      id: String(node.redeem_item_id == null ? '' : node.redeem_item_id),
+      name: String(node.redeem_item_name || ''),
+      image: node.redeem_item_image || node.redeem_detail_image || '',
+      typeName: node.redeem_item_type_name || '',
+      type: Number(node.redeem_item_type) || 0,
+      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || ''
+    });
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectRedeems(v, out, depth + 1);
+  }
+}
+
+/* redeem 条目 -> 候选。有图 + 认得出组件就拼成单组件候选；否则只留 id 等面板解析。 */
+function equipFromRedeem(r) {
+  if (!r) return null;
+  var kind = kindOfTypeName(r.typeName);
+  var img = isHttpUrl(r.image) ? r.image : '';
+  var name = r.name || ('装扮 ' + (r.id || ''));
+  var id = /^\d+$/.test(r.id) ? Number(r.id) : r.id;
+
+  if (kind && img && kind !== 'skin') {
+    var comp = { id: id || 0, name: name, url: img };
+    if (kind === 'pendant') comp.image = img;
+    var comps = {};
+    comps[kind] = comp;
+    return {
+      id: id || name,
+      name: name,
+      preview: img,
+      ver: 1700000000,
+      components: comps,
+      from: 'collect',
+      partial: true,
+      typeName: r.typeName
+    };
+  }
+
+  /* 主题套装 / 认不出类型：只带 id，面板里再拉 x/garb/v2/mall/suit/detail */
+  if (r.id) {
+    return {
+      id: id,
+      name: name,
+      preview: img,
+      components: {},
+      from: 'collect',
+      needResolve: true,
+      typeName: r.typeName
+    };
+  }
+  return null;
+}
+
+/* ---------- 已拥有资产列表 ----------
+   x/garb/user/asset/list、x/garb/v3/user/asset、x/garb/user/pendant/list…
+   结构没完全解出，所以只在**明确看到 part 字段**时才动；
+   挂件那条接口按路径特判（它的条目没有 part）。
+   拿不到就什么都不做，但响应已经被 shouldLogApi 记进日志了。 */
+
+var ASSET_PARTS = {
+  skin: 1,
+  loading: 1,
+  card: 1,
+  card_bg: 1,
+  pendant: 1,
+  fansPendant: 1,
+  thumbup: 1,
+  play_icon: 1,
+  space_bg: 1
+};
+
+function collectAssets(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 12) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectAssets(node[i], out, depth + 1);
+    return;
+  }
+  var part = typeof node.part === 'string' ? node.part : '';
+  if (part && ASSET_PARTS[part]) {
+    var it = node.item || {};
+    out.push({
+      part: part === 'fansPendant' ? 'pendant' : part,
+      id: it.item_id || node.asset_id || node.id || 0,
+      name: it.name || node.name || '',
+      props: it.properties || node.properties || {}
+    });
+    return; /* 命中就不再往里钻 */
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectAssets(v, out, depth + 1);
+  }
+}
+
+/* 挂件接口（/x/garb/user/pendant/list）的条目没有 part，按字段特征认 */
+function collectPendantItems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectPendantItems(node[i], out, depth + 1);
+    return;
+  }
+  var p = node.properties || node;
+  if (
+    (isHttpUrl(p.image) || isHttpUrl(p.image_enhance)) &&
+    (node.item_id != null || node.id != null || node.pid != null)
+  ) {
+    out.push({
+      part: 'pendant',
+      id: node.item_id || node.id || node.pid || 0,
+      name: node.name || '',
+      props: p
+    });
+    return;
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object') collectPendantItems(v, out, depth + 1);
+  }
+}
+
+/* ---------- 统一入口：从任意 garb/vas 响应里挖候选 ----------
+   一条响应里可能同时有多种东西（suit_items 套装 + collect_infos 兑换物 +
+   asset 列表），所以一次遍历全试一遍，最后统一写存储、只 $done 一次。 */
+function handleCandidates(url) {
+  var body = $response && $response.body;
+  if (typeof body !== 'string' || body.length < 16 || body.length > 4194304) return $done({});
+
+  var profile = PROFILE_RE.test(url);
+  /* 便宜的前置判断：没这三样、又不是空间/我的页，就别白解析一遍 JSON
+     （x/garb/mall/suit/all 那种全量目录能有好几 MB）。 */
+  var maybe =
+    body.indexOf('suit_items') >= 0 ||
+    body.indexOf('redeem_item') >= 0 ||
+    body.indexOf('"part"') >= 0 ||
+    /\/pendant\//.test(url);
+  if (!maybe && !profile) return $done({});
+  if (body.indexOf('{') < 0) return $done({});
+
+  var json;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    return $done({});
+  }
+  if (!json || typeof json !== 'object') return $done({});
+
+  var out = [];
+
+  /* 1) 套装：suit_items.skin[] 是主键，其它组件一起收 */
+  if (body.indexOf('suit_items') >= 0) {
+    var suits = [];
+    harvest(json, suits, 0);
+    for (var s = 0; s < suits.length && out.length < 40; s++) out.push(suits[s]);
+  }
+
+  /* 2) 收藏集兑换物 */
+  if (body.indexOf('redeem_item') >= 0) {
+    var redeems = [];
+    collectRedeems(json, redeems, 0);
+    for (var r = 0; r < redeems.length && out.length < 60; r++) {
+      var re = equipFromRedeem(redeems[r]);
+      if (re) out.push(re);
+    }
+  }
+
+  /* 3) 已拥有资产列表 */
+  if (body.indexOf('"part"') >= 0 || /\/pendant\//.test(url)) {
+    var assets = [];
+    collectAssets(json, assets, 0);
+    if (/\/pendant\//.test(url) && !assets.length) collectPendantItems(json, assets, 0);
+    for (var a = 0; a < assets.length && out.length < 90; a++) {
+      var it = assets[a];
+      var c = componentOf(it.part, { item_id: it.id, name: it.name, properties: it.props });
+      if (!c || !isHttpUrl(c.url)) continue;
+      var comps = {};
+      comps[it.part] = c;
+      out.push({
+        id: it.id || it.name,
+        name: it.name || '',
+        preview: c.url,
+        ver: 1700000000,
+        components: comps,
+        from: 'assets',
+        partial: true
+      });
+    }
+  }
+
+  if (out.length) {
+    pushSeen(out);
+    pushFound(out);
+  } else if (!profile) {
+    return $done({});
+  }
+
+  /* 空间 / 我的页 / 数字藏品 / 我的装扮：顺手按字段名换图 */
+  if (profile && rewriteProfileBody(url, json)) {
+    return $done({ body: JSON.stringify(json) });
+  }
   $done({});
 }
 
@@ -1234,7 +1731,12 @@ function handleCard() {
   if (!selfMid && !prefs.allMembers) return $done({});
 
   var body = $response && $response.body;
-  if (typeof body !== 'string' || body.indexOf('user_sailing') < 0) return $done({});
+  if (typeof body !== 'string') return $done({});
+  /* 评论/动态走 member.user_sailing*；动态信息流的作者节点是
+     modules.module_author，里面只有 pendant / card_bg —— 也要放进来。 */
+  if (body.indexOf('user_sailing') < 0 && body.indexOf('pendant') < 0 && body.indexOf('card_bg') < 0) {
+    return $done({});
+  }
 
   var json;
   try {
@@ -1253,13 +1755,106 @@ function handleCard() {
    - brand/list ：data.{pull_interval,list[],show[]}，list[].thumb 是开屏图
    - event/list2：一组「前后卡片」元素，front_image_url / back_image_url */
 function handleSplash() {
+  var url = ($request && $request.url) || '';
   var body = $response && $response.body;
   if (typeof body !== 'string') return $done({});
+
+  /* 新版 business 开屏（BFCBusinessSplashSwift）：list 拿候选、show 决定展示。
+     这是 App 现在真正走的一条，旧版 brand/list 只用于「品牌开屏设置」页。 */
+  if (/\/x\/v2\/splash\/(?:list|show)/.test(url)) return handleBusinessSplash(body, url);
   if (body.indexOf('pull_interval') >= 0) return handleBrandSplash(body);
   if (body.indexOf('front_image_url') >= 0 || body.indexOf('back_image_url') >= 0) {
     return handleEventSplash(body);
   }
   return $done({});
+}
+
+/* 新版 business 开屏：结构未完全解出，按「图片字段名」策略兜。
+   list 里认出创意项就记候选；选中后把候选里的图地址换成我们的图。 */
+function handleBusinessSplash(body, url) {
+  var json;
+  try {
+    json = JSON.parse(body);
+  } catch (e) {
+    return $done({});
+  }
+  if (!json || json.code !== 0) return $done({});
+
+  /* list：记录候选（含 id + 图） */
+  if (/\/list/.test(url)) {
+    var items = [];
+    collectSplashItems(json, items, 0);
+    if (items.length) mergeSplashList(items);
+  }
+
+  var splash = readJSON(KEY_SPLASH, null);
+  if (!splash || !isHttpUrl(splash.thumb)) return $done({});
+  if (splash.kind && splash.kind !== 'brand') return $done({});
+
+  /* 把响应里所有「开屏创意图」字段换成选中的图 */
+  if (!replaceSplashImage(json, splash.thumb, 0)) return $done({});
+  $done({ body: JSON.stringify(json) });
+}
+
+/* 开屏创意图字段白名单（尽量窄，避免误伤 logo / 按钮图） */
+var SPLASH_IMG_KEYS = {
+  image_url: 1,
+  image: 1,
+  thumb: 1,
+  pic: 1,
+  splash_image: 1,
+  main_image: 1,
+  cover: 1,
+  url: 0 /* url 太泛，只在含 id 的对象里才换 */
+};
+
+/* 递归：在「含 id 的对象」里替换开屏创意图 */
+function replaceSplashImage(node, img, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return 0;
+  var n = 0;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) n += replaceSplashImage(node[i], img, depth + 1);
+    return n;
+  }
+  var hasId = node.id != null || node.creative_id != null || node.splash_id != null;
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (SPLASH_IMG_KEYS[k] && typeof v === 'string' && /^https?:\/\//.test(v) && v !== img) {
+      /* url 这个键名太泛，只在明确是创意项（有 id）时换 */
+      if (k === 'url' && !hasId) continue;
+      node[k] = img;
+      n++;
+      continue;
+    }
+    if (v && typeof v === 'object') n += replaceSplashImage(v, img, depth + 1);
+  }
+  return n;
+}
+
+/* 从 business 开屏响应里挑候选（有 id 且含图地址的对象） */
+function collectSplashItems(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectSplashItems(node[i], out, depth + 1);
+    return;
+  }
+  var id = node.id != null ? node.id : node.creative_id != null ? node.creative_id : null;
+  if (id != null) {
+    var img = '';
+    var keys = ['image_url', 'image', 'thumb', 'pic', 'splash_image', 'main_image', 'cover', 'url'];
+    for (var j = 0; j < keys.length; j++) {
+      if (isHttpUrl(node[keys[j]])) {
+        img = node[keys[j]];
+        break;
+      }
+    }
+    if (img) out.push({ kind: 'brand', id: id, thumb: img, logo_url: '' });
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    if (node[k] && typeof node[k] === 'object') collectSplashItems(node[k], out, depth + 1);
+  }
 }
 
 /* 只在字段已存在时替换，避免给元素塞出 App 不认识的结构 */
@@ -1293,10 +1888,7 @@ function handleBrandSplash(body) {
       if (!isHttpUrl(it.thumb)) continue;
       out.push({ kind: 'brand', id: it.id, thumb: it.thumb, logo_url: it.logo_url || '' });
     }
-    if (out.length) {
-      if (out.length > SPLASH_MAX) out = out.slice(0, SPLASH_MAX);
-      writeJSON(KEY_SPLASH_LIST, out);
-    }
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -1367,7 +1959,7 @@ function handleEventSplash(body) {
         back: isHttpUrl(e.back_image_url) ? e.back_image_url : ''
       });
     }
-    if (out.length) writeJSON(KEY_SPLASH_LIST, out);
+    if (out.length) mergeSplashList(out);
   }
 
   var splash = readJSON(KEY_SPLASH, null);
@@ -1906,6 +2498,7 @@ function handleChronosPkg() {
   var url = ($request && $request.url) || '';
 
   if (TYPE === 'http-request') return handleBridge();
+  if (shouldLogApi(url)) logApi(url, $response && $response.body);
   if (/\/x\/resource\/show\/skin/.test(url)) return handleApply();
   /* 装扮商城/详情/收藏集走 /h5/mall/，收藏集的「主题套装」预览页走
      /blackboard/fe/suit-preview.html（独立活动页，不在 mall 下），
@@ -1917,19 +2510,20 @@ function handleChronosPkg() {
   ) {
     return handleInject();
   }
-  /* 评论 / 动态：换自己的评论装扮与头像挂件 */
-  if (/\/x\/v2\/reply/.test(url) || /\/x\/dynamic\//.test(url)) return handleCard();
-  /* 开屏动画 */
+  /* 开屏动画（品牌 / 活动 / 新版 business list+show） */
   if (/\/x\/v2\/splash\//.test(url)) return handleSplash();
   /* Chronos 开屏包（只能回放服务端发过的三件套） */
   if (/\/x\/chronos\//.test(url)) return handleChronos();
-  /* 收藏集开屏：结构未解，按字段名兜 */
+  /* 收藏集开屏 */
   if (/\/x\/vas\/dlc_act\/card\/splash_info/.test(url)) return handleCollectSplash();
-  /* 空间装扮 / 数字藏品空间背景：按字段名把组件图换掉 */
-  if (/\/x\/v2\/space\//.test(url) || /\/x\/vas\/digital\//.test(url)) return handleGarbFields();
-  /* gRPC 装扮服务（可选，需装 BiliSkinGrpc.sgmodule 并在 MITM 里加 grpc.biliapi.net） */
+  /* 评论 / 动态：换自己的评论装扮与头像挂件。
+     动态信息流走 x/polymer/web-dynamic（旧代码只写了 x/dynamic，所以动态一直没生效）。 */
+  if (/\/x\/(?:v2\/reply|dynamic|polymer\/web-dynamic|polymer\/v2\/dynamic)/.test(url)) return handleCard();
+  /* gRPC 装扮服务（需 MITM grpc.biliapi.net，第 9 条规则） */
   if (/^https?:\/\/grpc\.biliapi\.net\//.test(url)) return handleGrpc();
-  /* Chronos 包体本地缓存（可选，需装 BiliSkinCache.sgmodule） */
+  /* Chronos 包体本地缓存（第 10 条规则） */
   if (/\.cron(\?|$)/.test(url)) return handleChronosPkg();
-  return handleSniff();
+  /* 剩下的 garb / vas 一律挖候选：套装、收藏集兑换物、已拥有资产，
+     空间/我的页那类接口还会顺带按字段名换图。 */
+  return handleCandidates(url);
 })();
