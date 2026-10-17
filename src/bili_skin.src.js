@@ -163,6 +163,7 @@ var FIELD_OBJECT = {
 
 /* 由构建脚本内联的 H5 页面脚本 */
 var H5_PAYLOAD = __H5_PAYLOAD__;
+var DELISTED_SKINS = __DELISTED_SKINS__;
 
 var TYPE =
   ($script && $script.type) ||
@@ -446,20 +447,66 @@ function ensureSplashMd5(sp, cb) {
 
 /* ===================== 组件取值 ===================== */
 
+function isDarkMode(reqUrl, reqHeaders) {
+  var u = String(reqUrl || '');
+  if (/[?&](?:night|dark)=1\b/.test(u)) return true;
+  if (/[?&]native\.theme=2\b/.test(u)) return true;
+  var ua = '';
+  if (reqHeaders) {
+    for (var k in reqHeaders) {
+      if (/^user-agent$/i.test(k)) {
+        ua = String(reqHeaders[k]);
+        break;
+      }
+    }
+  }
+  if (/themeId\/2\b/.test(ua)) return true;
+  return false;
+}
+
 /* 装扮 -> user_equip（个性主题） */
-function skinOf(e) {
+function skinOf(e, dark) {
   if (!e || typeof e !== 'object') return null;
   var c = (e.components && e.components.skin) || null;
   var url = e.package_url || (c && (c.package_url || c.url)) || '';
-  if (!isHttpUrl(url)) return null;
+  var md5 = e.package_md5 || (c && c.package_md5) || '';
+
+  var isTheme = isHttpUrl(url) || (c && (c.id || c.preview)) || e.video_url || (e.typeName && e.typeName.indexOf('主题') >= 0);
+  if (!isTheme) return null;
+
+  var isDark = dark || (e.data && e.data.color_mode === 'dark');
+
+  /* 若是主题但没有自带装扮包（如收藏集提取的主题），回退到官方基底包，确保客户端能正常渲染 */
+  if (!isHttpUrl(url)) {
+    if (isDark) {
+      url = 'https://i0.hdslb.com/bfs/garb/zip/14e2f377e601481e2befab34e0773c81886b7232.zip';
+      md5 = 'e10f4ff37f3d964c6ecb3f8f2c8434c9';
+    } else {
+      url = 'https://i0.hdslb.com/bfs/garb/zip/bbd834e1f783cef686569ff3cf94bdc3bc57f9e8.zip';
+      md5 = 'b251980ad26b33b8c4a0a64049b14daf';
+    }
+  }
+
+  var sdata = skinData(e.data || {}, isDark);
+  var img = e.preview || (c && (c.image_preview || c.image_cover)) || e.image || '';
+  if (img) {
+    if (!sdata.head_myself_squared_bg) sdata.head_myself_squared_bg = img;
+    if (!sdata.head_myself_bg) sdata.head_myself_bg = img;
+    if (!sdata.head_bg) sdata.head_bg = img;
+  }
+  if (e.video_url) {
+    sdata.head_myself_mp4_bg = e.video_url;
+    sdata.head_myself_mp4_play = 'loop';
+  }
+
   return {
     id: e.id || (c && c.id) || 0,
     name: e.name || (c && c.name) || '',
-    preview: e.preview || (c && (c.image_preview || c.image_cover)) || '',
+    preview: img,
     ver: Number(e.ver || (c && c.ver)) || 1700000000,
     package_url: url,
-    package_md5: e.package_md5 || (c && c.package_md5) || '',
-    data: e.data || {}
+    package_md5: md5,
+    data: sdata
   };
 }
 
@@ -687,7 +734,93 @@ function rewriteProfileBody(url, json) {
     if (selfMid && who && who !== selfMid) return false;
   }
 
-  return rewriteProfile(json, comps, 0) > 0;
+  var n = rewriteProfile(json, comps, 0);
+  if (isMine && json.data) {
+    if (rewriteMineData(json.data, comps, equip)) n++;
+  }
+  return n > 0;
+}
+
+/* 适配新版 B站客户端 Layered Avatar（复合头像挂件图层） */
+function injectAvatarPendantLayer(avatar, pendantUrl) {
+  if (!avatar || typeof avatar !== 'object' || !pendantUrl) return false;
+  var targetGroups = [avatar.layers, avatar.fallback_layers];
+  var injected = false;
+  for (var g = 0; g < targetGroups.length; g++) {
+    var group = targetGroups[g];
+    if (!group) continue;
+    var list = Array.isArray(group) ? group : [group];
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!item || !Array.isArray(item.layers)) continue;
+      var sublayers = item.layers;
+      var found = false;
+      for (var j = 0; j < sublayers.length; j++) {
+        var l = sublayers[j];
+        if (l && l.layer_config && l.layer_config.tags && (l.layer_config.tags.PENDANT_LAYER || l.layer_config.tags.PENDANT)) {
+          if (l.resource && l.resource.res_image && l.resource.res_image.image_src && l.resource.res_image.image_src.remote) {
+            l.resource.res_image.image_src.remote.url = pendantUrl;
+            found = true;
+            injected = true;
+          }
+        }
+      }
+      if (!found) {
+        sublayers.push({
+          visible: true,
+          general_spec: {
+            pos_spec: { coordinate_pos: 2, axis_x: 0.675, axis_y: 0.675 },
+            size_spec: { width: 1.35, height: 1.35 },
+            render_spec: { opacity: 1 }
+          },
+          layer_config: {
+            tags: { PENDANT_LAYER: {} },
+            is_critical: false
+          },
+          resource: {
+            res_type: 3,
+            res_image: {
+              image_src: {
+                src_type: 1,
+                placeholder: 0,
+                remote: {
+                  url: pendantUrl,
+                  bfs_style: 'widget-layer-avatar'
+                }
+              }
+            }
+          }
+        });
+        injected = true;
+      }
+    }
+  }
+  return injected;
+}
+
+/* 「我的」主页顶栏装扮与挂件字段增强 */
+function rewriteMineData(data, comps, equip) {
+  if (!data || typeof data !== 'object') return false;
+  var changed = false;
+  var bg = comps.space_bg || comps.card || equip.preview || (equip.data && equip.data.head_myself_bg) || '';
+  if (bg) {
+    if (data.header_bg !== bg) { data.header_bg = bg; changed = true; }
+    if (data.vip_space_label !== bg) { data.vip_space_label = bg; changed = true; }
+  }
+  if (comps.pendant) {
+    if (data.pendantUrl !== comps.pendant) { data.pendantUrl = comps.pendant; changed = true; }
+    data.pendant = {
+      pid: comps.pendant_id || 1,
+      name: (equip.components && equip.components.pendant && equip.components.pendant.name) || '',
+      image: comps.pendant,
+      expire: 0,
+      image_enhance: comps.pendant,
+      image_enhance_frame: ''
+    };
+    changed = true;
+    if (data.avatar && injectAvatarPendantLayer(data.avatar, comps.pendant)) changed = true;
+  }
+  return changed;
 }
 
 /* 开屏候选合并写入。
@@ -1171,6 +1304,11 @@ function handleBridge() {
     }
     return reply({ code: 0, data: fo });
   }
+
+  /* 官方绝版/下架装扮库（30套主题 + 8套加载动画） */
+  if (name === 'delisted') {
+    return reply({ code: 0, data: DELISTED_SKINS });
+  }
   if (name === 'found/clear') {
     $persistentStore.write('', KEY_FOUND);
     return reply({ code: 0 });
@@ -1222,8 +1360,9 @@ function handleApply() {
   if (!resp || resp.code !== 0 || !resp.data) return $done({});
 
   var changed = false;
+  var dark = isDarkMode($request && $request.url, $request && $request.headers);
 
-  var skin = skinOf(equip);
+  var skin = skinOf(equip, dark);
   if (skin) {
     resp.data.user_equip = skin;
     changed = true;
@@ -1283,21 +1422,23 @@ var COMPONENTS = [
   'emoji_package'
 ];
 
-function skinData(p) {
+function skinData(p, dark) {
   p = p || {};
   var out = {};
   for (var k in p) {
     if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
   }
-  out.color_mode = p.color_mode || 'light';
-  out.color = p.color || '#212121';
-  out.color_second_page = p.color_second_page || '#ffffff';
-  out.side_bg_color = p.side_bg_color || p.color_second_page || '#ffffff';
-  out.tail_color = p.tail_color || '#996c00';
-  out.tail_color_selected = p.tail_color_selected || '#0d6872';
+  var isDark = dark || p.color_mode === 'dark';
+  out.color_mode = isDark ? 'dark' : (p.color_mode || 'light');
+  out.color = isDark ? '#ffffff' : (p.color || '#212121');
+  out.color_second_page = p.color_second_page || (isDark ? '#302C49' : '#ffffff');
+  out.side_bg_color = p.side_bg_color || p.color_second_page || (isDark ? '#29244d' : '#ffffff');
+  out.tail_color = p.tail_color || (isDark ? '#dad6d6' : '#996c00');
+  out.tail_color_selected = p.tail_color_selected || (isDark ? '#a2f3f7' : '#0d6872');
   out.tail_icon_ani = String(p.tail_icon_ani) === 'true';
   out.tail_icon_ani_mode = p.tail_icon_ani_mode || 'once';
   out.tail_icon_mode = p.tail_icon_mode || 'img';
+  out.head_myself_mp4_play = p.head_myself_mp4_play || (p.head_myself_mp4_bg ? 'loop' : 'once');
   return out;
 }
 
@@ -1466,13 +1607,18 @@ function collectRedeems(node, out, depth) {
     return;
   }
   if (node.redeem_item_name || node.redeem_item_id || node.redeem_item_type_name) {
+    var vUrl = '';
+    if (node.redeem_detail_videos && node.redeem_detail_videos instanceof Array && node.redeem_detail_videos.length) {
+      vUrl = node.redeem_detail_videos[0];
+    }
     out.push({
       id: String(node.redeem_item_id == null ? '' : node.redeem_item_id),
       name: String(node.redeem_item_name || ''),
       image: node.redeem_item_image || node.redeem_detail_image || '',
       typeName: node.redeem_item_type_name || '',
       type: Number(node.redeem_item_type) || 0,
-      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || ''
+      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || '',
+      video_url: vUrl
     });
   }
   for (var k in node) {
@@ -1519,6 +1665,7 @@ function equipFromRedeem(r) {
       id: id || name,
       name: name,
       preview: img,
+      video_url: r.video_url || '',
       ver: 1700000000,
       components: fallbackComps,
       from: 'collect',

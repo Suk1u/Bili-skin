@@ -301,6 +301,9 @@
   function bridgeReminderAdd(r) {
     return bpost('reminders/add', r);
   }
+  function bridgeDelisted() {
+    return bget('delisted');
+  }
 
   /* 拉一次设置，失败就用默认值 */
   async function loadPrefs() {
@@ -694,6 +697,11 @@
       var id = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
       var hasImg = /^https?:\/\//.test(img);
 
+      var vUrl = '';
+      if (it.redeem_detail_videos && Array.isArray(it.redeem_detail_videos) && it.redeem_detail_videos.length) {
+        vUrl = it.redeem_detail_videos[0];
+      }
+
       if (!kind || kind === 'skin' || !hasImg) {
         if (id) {
           var fb = {};
@@ -706,6 +714,7 @@
             id: id,
             name: name,
             preview: hasImg ? img : '',
+            video_url: vUrl,
             components: fb,
             from: 'collect',
             needResolve: true,
@@ -723,6 +732,7 @@
         id: id || name,
         name: name,
         preview: img,
+        video_url: vUrl,
         ver: 1700000000,
         components: comps,
         from: 'collect',
@@ -1401,6 +1411,7 @@
 
     var acts = [
       { key: 'browse', label: t('browse'), pink: true },
+      { key: 'classic', label: '绝版装扮' },
       { key: 'settings', label: t('settings') }
     ];
     if (cur && cur.name) acts.push({ key: 'clear', label: t('clear') });
@@ -1447,6 +1458,13 @@
       });
     }
 
+    var classicBtn = panel.querySelector('[data-act="classic"]');
+    if (classicBtn) {
+      classicBtn.addEventListener('click', function () {
+        openClassic();
+      });
+    }
+
     var setBtn = panel.querySelector('[data-act="settings"]');
     if (setBtn) {
       setBtn.addEventListener('click', function () {
@@ -1471,7 +1489,10 @@
     openSheet(
       t('all'),
       t('allSub'),
-      [{ key: 'byid', label: t('byId') }],
+      [
+        { key: 'classic', label: '绝版 (30)' },
+        { key: 'byid', label: t('byId') }
+      ],
       '<input id="bss-q" placeholder="' + esc(t('search')) + '" ' +
         'style="width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +
         'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none">' +
@@ -1489,6 +1510,13 @@
     var catsEl = body.querySelector('#bss-cats');
     var gridEl = body.querySelector('#bss-grid');
     var moreEl = body.querySelector('#bss-more');
+
+    var classicNav = panel.querySelector('[data-act="classic"]');
+    if (classicNav) {
+      classicNav.addEventListener('click', function () {
+        openClassic();
+      });
+    }
 
     var st = {
       pn: 0,
@@ -1714,6 +1742,55 @@
       if (launcher) launcher.textContent = '应用装扮';
       toast('失败：' + e.message);
     }
+  }
+
+  /* 官方绝版/下架装扮库（30套主题 + 8套加载动画） */
+  async function openClassic() {
+    toast(t('loading'));
+    var res = null;
+    try {
+      res = await bridgeDelisted();
+    } catch (e) {}
+    var skins = (res && res.data && res.data.user_equip) || [];
+    var loads = (res && res.data && res.data.load_equip) || [];
+
+    var list = [];
+    for (var i = 0; i < skins.length; i++) {
+      var s = skins[i];
+      var matchedLoad = null;
+      for (var j = 0; j < loads.length; j++) {
+        if (loads[j].name === s.name || loads[j].id === s.id) {
+          matchedLoad = loads[j];
+          break;
+        }
+      }
+      var comps = {
+        skin: { id: s.id, name: s.name, package_url: s.package_url, package_md5: s.package_md5 }
+      };
+      if (matchedLoad) {
+        comps.loading = { id: matchedLoad.id, name: matchedLoad.name, loading_url: matchedLoad.loading_url };
+      }
+      list.push({
+        id: s.id,
+        name: s.name,
+        preview: s.preview,
+        ver: s.ver,
+        package_url: s.package_url,
+        package_md5: s.package_md5,
+        data: s.data,
+        components: comps,
+        from: 'classic',
+        typeName: '官方绝版'
+      });
+    }
+
+    openSheet(
+      '官方绝版/下架装扮库',
+      '收录 30 款经典官方下架皮肤与加载动画，CDN 资源仍可直连下载',
+      [],
+      gridHtml(list)
+    );
+    bindGridActions(panel.querySelector('#bss-body'), list);
   }
 
   /* ===================== 设置 / 导出导入 ===================== */

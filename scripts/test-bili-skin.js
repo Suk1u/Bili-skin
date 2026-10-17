@@ -1797,6 +1797,43 @@ t('我的页/用户原本没有挂件时依然能够成功注入挂件', async f
   assert(d.card.pendant.pid > 0, 'pid 变为有效数字');
 });
 
+t('我的页/新版 avatar.layers 挂件图层成功注入', async function () {
+  const MINE_AVATAR_RESP = {
+    code: 0,
+    data: {
+      mid: 12345,
+      avatar: {
+        container_size: { width: 1.35, height: 1.35 },
+        layers: [
+          {
+            is_critical_group: true,
+            layers: [
+              {
+                visible: true,
+                general_spec: { pos_spec: { coordinate_pos: 2, axis_x: 0.675, axis_y: 0.675 }, size_spec: { width: 1, height: 1 } },
+                resource: { res_type: 3, res_image: { image_src: { remote: { url: 'https://i0.hdslb.com/bfs/face/member/noface.jpg' } } } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify(MINE_AVATAR_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl === 'https://i0.hdslb.com/pend.png', 'pendantUrl 注入');
+  assert(d.pendant && d.pendant.image === 'https://i0.hdslb.com/pend.png', 'pendant 对象注入');
+  const sublayers = d.avatar.layers[0].layers;
+  const pLayer = sublayers.find(l => l.layer_config && l.layer_config.tags && l.layer_config.tags.PENDANT_LAYER);
+  assert(pLayer, 'avatar.layers 注入了 PENDANT_LAYER');
+  assert(pLayer.resource.res_image.image_src.remote.url === 'https://i0.hdslb.com/pend.png', '挂件图层 URL 注入正确');
+});
+
 t('评论装扮/用户原本没有 user_sailing 节点时依然能够成功注入', async function () {
   const NO_SAILING_RESP = {
     code: 0,
@@ -1864,6 +1901,71 @@ t('主题数据/保留 head_myself_* 等「我的」主页顶栏完整字段', a
   const d = JSON.parse(bodyText(r)).data.user_equip.data;
   assert(d.head_myself_mp4_bg === 'https://i0.hdslb.com/head_mp4.mp4', 'head_myself_mp4_bg 保留');
   assert(d.head_myself_squared_bg === 'https://i0.hdslb.com/head_square.jpg', 'head_myself_squared_bg 保留');
+});
+
+t('收藏集/home_detail_v2 动态主题套装与 card_list 嗅探与注入', async function () {
+  const HOME_DETAIL_RESP = {
+    code: 0,
+    data: {
+      lottery_id: 114676,
+      name: '艾尔莎只想宅在家',
+      card_list: [
+        { card_type_id: 1001, card_name: '狼出没注意', card_img: 'https://i0.hdslb.com/bfs/card1.png' }
+      ],
+      collect_list: [
+        {
+          collect_id: 114679,
+          redeem_item_type: 5,
+          redeem_item_id: '1791739296001&1791739013001',
+          redeem_item_name: '艾尔莎只想宅在家',
+          redeem_item_image: 'https://i0.hdslb.com/bfs/suit_preview.png',
+          redeem_item_type_name: '动态主题套装',
+          redeem_detail_videos: ['https://hdslb.com/video.mp4']
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp('https://api.bilibili.com/x/vas/dlc_act/lottery/home_detail/v2?act_id=114675', JSON.stringify(HOME_DETAIL_RESP), {
+      store: {}
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const found = JSON.parse(stored(r, 'BiliSkinFound') || '[]');
+  const suit = found.map(x => x.equip).find(f => f.name === '艾尔莎只想宅在家');
+  assert(suit, '提取到了动态主题套装');
+  assert(suit.video_url === 'https://hdslb.com/video.mp4', '提取到了视频 URL');
+  const card = found.map(x => x.equip).find(f => f.name === '狼出没注意');
+  assert(card, '提取到了 card_list 中的立绘卡片');
+
+  // 测试该动态主题套装注入到 skin
+  const applyResp = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(suit) }
+    })
+  );
+  const uEquip = JSON.parse(bodyText(applyResp)).data.user_equip;
+  assert(uEquip && uEquip.package_url, '无自带包的动态主题自动获得了官方基底包');
+  assert(uEquip.data.head_myself_mp4_bg === 'https://hdslb.com/video.mp4', '动效视频成功注入');
+});
+
+t('桥/delisted 返回官方下架/绝版主题库并支持应用', async function () {
+  const r = await runSurge(req('delisted'));
+  const d = rb(r).data;
+  assert(d && d.user_equip && d.user_equip.length >= 30, '包含至少30套绝版主题: ' + (d && d.user_equip && d.user_equip.length));
+  assert(d && d.load_equip && d.load_equip.length >= 8, '包含至少8套绝版加载动画: ' + (d && d.load_equip && d.load_equip.length));
+  const miku = d.user_equip.find(x => x.name === '初音未来-日版');
+  assert(miku && miku.package_url && miku.package_md5, '初音未来包体完整');
+
+  // 测试该官方下架主题应用到 skin
+  const applyResp = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(miku) }
+    })
+  );
+  const uEquip = JSON.parse(bodyText(applyResp)).data.user_equip;
+  assert(uEquip.id === miku.id, '绝版主题 id 正确');
+  assert(uEquip.package_url === miku.package_url, '绝版主题 package_url 注入成功');
 });
 
 /* ---------- 运行 ---------- */
