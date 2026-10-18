@@ -163,6 +163,7 @@ var FIELD_OBJECT = {
 
 /* 由构建脚本内联的 H5 页面脚本 */
 var H5_PAYLOAD = __H5_PAYLOAD__;
+var DELISTED_SKINS = __DELISTED_SKINS__;
 
 var TYPE =
   ($script && $script.type) ||
@@ -217,6 +218,7 @@ function validEquip(e) {
   if (!e || typeof e !== 'object') return false;
   if (isHttpUrl(e.package_url)) return true;
   if (isHttpUrl(e.loading_url)) return true;
+  if (e.needResolve && (e.id || isHttpUrl(e.preview))) return true;
   var c = e.components;
   if (c && typeof c === 'object') {
     if (c.skin && isHttpUrl(c.skin.package_url || c.skin.url)) return true;
@@ -445,20 +447,66 @@ function ensureSplashMd5(sp, cb) {
 
 /* ===================== 组件取值 ===================== */
 
+function isDarkMode(reqUrl, reqHeaders) {
+  var u = String(reqUrl || '');
+  if (/[?&](?:night|dark)=1\b/.test(u)) return true;
+  if (/[?&]native\.theme=2\b/.test(u)) return true;
+  var ua = '';
+  if (reqHeaders) {
+    for (var k in reqHeaders) {
+      if (/^user-agent$/i.test(k)) {
+        ua = String(reqHeaders[k]);
+        break;
+      }
+    }
+  }
+  if (/themeId\/2\b/.test(ua)) return true;
+  return false;
+}
+
 /* 装扮 -> user_equip（个性主题） */
-function skinOf(e) {
+function skinOf(e, dark) {
   if (!e || typeof e !== 'object') return null;
   var c = (e.components && e.components.skin) || null;
   var url = e.package_url || (c && (c.package_url || c.url)) || '';
-  if (!isHttpUrl(url)) return null;
+  var md5 = e.package_md5 || (c && c.package_md5) || '';
+
+  var isTheme = isHttpUrl(url) || (c && (c.id || c.preview)) || e.video_url || (e.typeName && e.typeName.indexOf('主题') >= 0);
+  if (!isTheme) return null;
+
+  var isDark = dark || (e.data && e.data.color_mode === 'dark');
+
+  /* 若是主题但没有自带装扮包（如收藏集提取的主题），回退到官方基底包，确保客户端能正常渲染 */
+  if (!isHttpUrl(url)) {
+    if (isDark) {
+      url = 'https://i0.hdslb.com/bfs/garb/zip/14e2f377e601481e2befab34e0773c81886b7232.zip';
+      md5 = 'e10f4ff37f3d964c6ecb3f8f2c8434c9';
+    } else {
+      url = 'https://i0.hdslb.com/bfs/garb/zip/bbd834e1f783cef686569ff3cf94bdc3bc57f9e8.zip';
+      md5 = 'b251980ad26b33b8c4a0a64049b14daf';
+    }
+  }
+
+  var sdata = skinData(e.data || {}, isDark);
+  var img = e.preview || (c && (c.image_preview || c.image_cover)) || e.image || '';
+  if (img) {
+    if (!sdata.head_myself_squared_bg) sdata.head_myself_squared_bg = img;
+    if (!sdata.head_myself_bg) sdata.head_myself_bg = img;
+    if (!sdata.head_bg) sdata.head_bg = img;
+  }
+  if (e.video_url) {
+    sdata.head_myself_mp4_bg = e.video_url;
+    sdata.head_myself_mp4_play = 'loop';
+  }
+
   return {
     id: e.id || (c && c.id) || 0,
     name: e.name || (c && c.name) || '',
-    preview: e.preview || (c && (c.image_preview || c.image_cover)) || '',
+    preview: img,
     ver: Number(e.ver || (c && c.ver)) || 1700000000,
     package_url: url,
-    package_md5: e.package_md5 || (c && c.package_md5) || '',
-    data: e.data || {}
+    package_md5: md5,
+    data: sdata
   };
 }
 
@@ -467,7 +515,13 @@ function loadingOf(e) {
   var c = e && e.components && e.components.loading;
   if (!c) {
     if (e && isHttpUrl(e.loading_url)) {
-      return { id: e.id || 0, name: e.name || '', ver: Number(e.ver) || 1700000000, loading_url: e.loading_url };
+      return {
+        id: e.id || 0,
+        name: e.name || '',
+        ver: Number(e.ver) || 1700000000,
+        loading_url: e.loading_url,
+        loading_frame_url: e.loading_frame_url || ''
+      };
     }
     return null;
   }
@@ -477,7 +531,8 @@ function loadingOf(e) {
     id: c.id || 0,
     name: c.name || (e && e.name) || '',
     ver: Number(c.ver) || 1700000000,
-    loading_url: url
+    loading_url: url,
+    loading_frame_url: c.loading_frame_url || c.frame_url || ''
   };
 }
 
@@ -497,7 +552,15 @@ function pendantOf(e) {
   if (!c) return null;
   var img = c.image || c.url || '';
   if (!isHttpUrl(img)) return null;
-  return { id: c.id || 0, name: c.name || (e && e.name) || '', image: img };
+  /* 动态形态（image_enhance）单独带出来：App 优先画它，
+     不一起换掉的话静态图会被旧的动态形态盖住（实机上像「两层」）。 */
+  var enh = c.image_enhance || c.imageEnhance || c.enhance || '';
+  return {
+    id: c.id || 0,
+    name: c.name || (e && e.name) || '',
+    image: img,
+    image_enhance: isHttpUrl(enh) ? enh : ''
+  };
 }
 
 /* 装扮 -> 各组件要用的图。给「按字段名换图」的通用改写用。 */
@@ -517,7 +580,7 @@ function compsOf(e) {
   var space = c.space_bg || {};
 
   pick('skin', e.package_url || skin.package_url || skin.url);
-  pick('loading', loading.loading_url || loading.url);
+  pick('loading', loading.loading_url || loading.url || e.loading_url);
   pick('card', card.image || card.url || cardbg.image);
   pick('card_bg', cardbg.image || cardbg.url || card.image);
   /* 挂件：静态图优先，拿不到就退到动态形态那张 */
@@ -527,6 +590,7 @@ function compsOf(e) {
   pick('play_icon', play.static_icon_image || play.url || play.middle_png);
   pick('space_bg', space.url || space.image1_portrait || space.image1_landscape);
   if (isHttpUrl(pend.image_enhance)) out.pendant = out.pendant || pend.image_enhance;
+  if (pend.id) out.pendant_id = Number(pend.id) || 1;
   return out;
 }
 
@@ -573,12 +637,17 @@ function rewriteProfile(node, comps, depth) {
     if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
     var v = node[k];
 
-    /* 1) 扁平字符串字段：值是 URL 就直接换 */
+    /* 1) 扁平字符串字段：值是 URL 就直接换；挂件/loading等字段即便当前为空字符串也注入 */
     var kind = FIELD_COMPONENT[k];
-    if (kind && typeof v === 'string' && /^https?:\/\//.test(v) && comps[kind] && v !== comps[kind]) {
-      node[k] = comps[kind];
-      n++;
-      continue;
+    if (kind && comps[kind]) {
+      var target = comps[kind];
+      if (typeof v === 'string') {
+        if (v !== target && (/^https?:\/\//.test(v) || v === '' || (kind === 'pendant' && /pendant/i.test(k)))) {
+          node[k] = target;
+          n++;
+          continue;
+        }
+      }
     }
 
     /* 2) 对象字段（挂件 / 卡片 / 空间背景）：先把里面按字段名换一遍 */
@@ -587,6 +656,21 @@ function rewriteProfile(node, comps, depth) {
       var sub = rewriteProfile(v, comps, depth + 1);
       if (sub) {
         n += sub;
+      }
+      if (okind === 'pendant') {
+        var pendImg = comps.pendant;
+        if (v.image !== pendImg) {
+          v.image = pendImg;
+          n++;
+        }
+        if (v.image_enhance !== pendImg) {
+          v.image_enhance = pendImg;
+          n++;
+        }
+        if (!v.pid || v.pid === 0) {
+          v.pid = (comps.pendant_id) || 1;
+          n++;
+        }
         continue;
       }
       /* 里面没有可识别的字段名：直接换对象的图片字段 */
@@ -594,7 +678,7 @@ function rewriteProfile(node, comps, depth) {
       var imgKeys = ['image', 'url'];
       for (var q = 0; q < imgKeys.length; q++) {
         var ik = imgKeys[q];
-        if (typeof v[ik] === 'string' && /^https?:\/\//.test(v[ik]) && v[ik] !== img) {
+        if (typeof v[ik] === 'string' && (/^https?:\/\//.test(v[ik]) || v[ik] === '') && v[ik] !== img) {
           v[ik] = img;
           n++;
           break;
@@ -623,9 +707,9 @@ function pickOwnerMid(json) {
 }
 
 /* 这些接口只可能返回「自己」的数据 */
-var MINE_RE = /\/x\/(?:v2\/account\/mine|member\/app\/pendant|garb\/user|garb\/v3\/user|garb\/skin|garb\/mall_v2\/mine)/;
+var MINE_RE = /\/x\/(?:v2\/account\/mine|v2\/account\/myinfo|member\/app\/pendant|garb\/user|garb\/v3\/user|garb\/skin|garb\/mall_v2\/mine)/;
 /* 需要「按字段名换图」的接口：空间主页 / 我的页 / 数字藏品 / 我的装扮设置 */
-var PROFILE_RE = /\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin)/;
+var PROFILE_RE = /\/x\/(?:v2\/space|v2\/account\/mine|v2\/account\/myinfo|space\/myinfo|member\/app\/pendant|vas\/digital|garb\/skin)/;
 
 /* 空间主页 / 我的页 / 数字藏品 / 我的装扮：换自己的挂件、空间海报、卡片。
    「我的」页一定是自己；space 页用响应里的 mid（或 URL 上的 mid/vmid）判断，
@@ -658,7 +742,101 @@ function rewriteProfileBody(url, json) {
     if (selfMid && who && who !== selfMid) return false;
   }
 
-  return rewriteProfile(json, comps, 0) > 0;
+  var n = rewriteProfile(json, comps, 0);
+  if (isMine && json.data) {
+    if (rewriteMineData(json.data, comps, equip)) n++;
+  }
+  return n > 0;
+}
+
+/* 适配新版 B站客户端 Layered Avatar（复合头像挂件图层） */
+function injectAvatarPendantLayer(avatar, pendantUrl) {
+  if (!avatar || typeof avatar !== 'object' || !pendantUrl) return false;
+  var targetGroups = [avatar.layers, avatar.fallback_layers];
+  var injected = false;
+  for (var g = 0; g < targetGroups.length; g++) {
+    var group = targetGroups[g];
+    if (!group) continue;
+    var list = Array.isArray(group) ? group : [group];
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      if (!item || !Array.isArray(item.layers)) continue;
+      var sublayers = item.layers;
+      var found = false;
+      for (var j = 0; j < sublayers.length; j++) {
+        var l = sublayers[j];
+        if (l && l.layer_config && l.layer_config.tags && (l.layer_config.tags.PENDANT_LAYER || l.layer_config.tags.PENDANT)) {
+          if (l.resource && l.resource.res_image && l.resource.res_image.image_src && l.resource.res_image.image_src.remote) {
+            l.resource.res_image.image_src.remote.url = pendantUrl;
+            found = true;
+            injected = true;
+          }
+        }
+      }
+      if (!found) {
+        sublayers.push({
+          visible: true,
+          general_spec: {
+            pos_spec: { coordinate_pos: 2, axis_x: 0.675, axis_y: 0.675 },
+            size_spec: { width: 1.35, height: 1.35 },
+            render_spec: { opacity: 1 }
+          },
+          layer_config: {
+            tags: { PENDANT_LAYER: {} },
+            is_critical: false
+          },
+          resource: {
+            res_type: 3,
+            res_image: {
+              image_src: {
+                src_type: 1,
+                placeholder: 0,
+                remote: {
+                  url: pendantUrl,
+                  bfs_style: 'widget-layer-avatar'
+                }
+              }
+            }
+          }
+        });
+        injected = true;
+      }
+    }
+  }
+  return injected;
+}
+
+/* 「我的」主页顶栏装扮与挂件字段增强 */
+function rewriteMineData(data, comps, equip) {
+  if (!data || typeof data !== 'object') return false;
+  var changed = false;
+  /* 顶栏背景只认「真的是背景图」的来源：空间海报 / 卡片组件，
+     或者整套主题自带的封面。
+     收藏集抓到的单组件候选（只有头像挂件）的 preview 就是挂件那张小图，
+     以前拿它当 header_bg，会把「我的」页顶栏糊成一张挂件。 */
+  var bg = comps.space_bg || comps.card || '';
+  var hasThemePkg = isHttpUrl(equip.package_url);
+  var themeBg = (equip.data && isHttpUrl(equip.data.head_myself_bg) && equip.data.head_myself_bg) || '';
+  if (!bg && (hasThemePkg || themeBg)) bg = themeBg || equip.preview || '';
+  if (!isHttpUrl(bg)) bg = '';
+  if (bg) {
+    if (data.header_bg !== bg) { data.header_bg = bg; changed = true; }
+    if (data.vip_space_label !== bg) { data.vip_space_label = bg; changed = true; }
+  }
+  if (comps.pendant) {
+    if (data.pendantUrl !== comps.pendant) { data.pendantUrl = comps.pendant; changed = true; }
+    data.pendant = {
+      pid: comps.pendant_id || 1,
+      name: (equip.components && equip.components.pendant && equip.components.pendant.name) || '',
+      image: comps.pendant,
+      expire: 0,
+      image_enhance: comps.pendant,
+      image_enhance_frame: ''
+    };
+    changed = true;
+    if (data.avatar && injectAvatarPendantLayer(data.avatar, comps.pendant)) changed = true;
+  }
+  return changed;
 }
 
 /* 开屏候选合并写入。
@@ -779,6 +957,25 @@ function handleBridge() {
       return reply({ code: -1, msg: '配置不是合法 JSON' });
     }
     if (!validEquip(equip)) return reply({ code: -1, msg: '配置缺少装扮包或加载动画' });
+
+    /* 合并已有装扮组件：应用单组件（如收藏集挂件）时保留已有主题，应用主题时保留已有独立挂件 */
+    var prev = readJSON(KEY_EQUIP, null);
+    if (prev && typeof prev === 'object') {
+      equip.components = equip.components || {};
+      var prevComps = prev.components || {};
+      if (!isHttpUrl(equip.package_url) && isHttpUrl(prev.package_url)) {
+        equip.package_url = prev.package_url;
+        equip.package_md5 = prev.package_md5;
+        equip.data = equip.data || prev.data;
+        if (!equip.preview) equip.preview = prev.preview;
+      }
+      for (var ck in prevComps) {
+        if (!equip.components[ck] && prevComps[ck]) {
+          equip.components[ck] = prevComps[ck];
+        }
+      }
+    }
+
     if (!writeJSON(KEY_EQUIP, equip)) return reply({ code: -1, msg: '写入失败' });
 
     /* 多账号：顺手按当前 mid 也存一份 */
@@ -1123,6 +1320,11 @@ function handleBridge() {
     }
     return reply({ code: 0, data: fo });
   }
+
+  /* 官方绝版/下架装扮库（30套主题 + 8套加载动画） */
+  if (name === 'delisted') {
+    return reply({ code: 0, data: DELISTED_SKINS });
+  }
   if (name === 'found/clear') {
     $persistentStore.write('', KEY_FOUND);
     return reply({ code: 0 });
@@ -1174,8 +1376,9 @@ function handleApply() {
   if (!resp || resp.code !== 0 || !resp.data) return $done({});
 
   var changed = false;
+  var dark = isDarkMode($request && $request.url, $request && $request.headers);
 
-  var skin = skinOf(equip);
+  var skin = skinOf(equip, dark);
   if (skin) {
     resp.data.user_equip = skin;
     changed = true;
@@ -1235,19 +1438,24 @@ var COMPONENTS = [
   'emoji_package'
 ];
 
-function skinData(p) {
+function skinData(p, dark) {
   p = p || {};
-  return {
-    color_mode: p.color_mode || 'light',
-    color: p.color || '#212121',
-    color_second_page: p.color_second_page || '#ffffff',
-    side_bg_color: p.side_bg_color || p.color_second_page || '#ffffff',
-    tail_color: p.tail_color || '#996c00',
-    tail_color_selected: p.tail_color_selected || '#0d6872',
-    tail_icon_ani: String(p.tail_icon_ani) === 'true',
-    tail_icon_ani_mode: p.tail_icon_ani_mode || 'once',
-    tail_icon_mode: p.tail_icon_mode || 'img'
-  };
+  var out = {};
+  for (var k in p) {
+    if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k];
+  }
+  var isDark = dark || p.color_mode === 'dark';
+  out.color_mode = isDark ? 'dark' : (p.color_mode || 'light');
+  out.color = isDark ? '#ffffff' : (p.color || '#212121');
+  out.color_second_page = p.color_second_page || (isDark ? '#302C49' : '#ffffff');
+  out.side_bg_color = p.side_bg_color || p.color_second_page || (isDark ? '#29244d' : '#ffffff');
+  out.tail_color = p.tail_color || (isDark ? '#dad6d6' : '#996c00');
+  out.tail_color_selected = p.tail_color_selected || (isDark ? '#a2f3f7' : '#0d6872');
+  out.tail_icon_ani = String(p.tail_icon_ani) === 'true';
+  out.tail_icon_ani_mode = p.tail_icon_ani_mode || 'once';
+  out.tail_icon_mode = p.tail_icon_mode || 'img';
+  out.head_myself_mp4_play = p.head_myself_mp4_play || (p.head_myself_mp4_bg ? 'loop' : 'once');
+  return out;
 }
 
 function componentOf(kind, entry) {
@@ -1415,13 +1623,18 @@ function collectRedeems(node, out, depth) {
     return;
   }
   if (node.redeem_item_name || node.redeem_item_id || node.redeem_item_type_name) {
+    var vUrl = '';
+    if (node.redeem_detail_videos && node.redeem_detail_videos instanceof Array && node.redeem_detail_videos.length) {
+      vUrl = node.redeem_detail_videos[0];
+    }
     out.push({
       id: String(node.redeem_item_id == null ? '' : node.redeem_item_id),
       name: String(node.redeem_item_name || ''),
       image: node.redeem_item_image || node.redeem_detail_image || '',
       typeName: node.redeem_item_type_name || '',
       type: Number(node.redeem_item_type) || 0,
-      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || ''
+      jump: node.garb_suit_url || node.garb_apply_url || node.jump_url || '',
+      video_url: vUrl
     });
   }
   for (var k in node) {
@@ -1456,15 +1669,23 @@ function equipFromRedeem(r) {
     };
   }
 
-  /* 主题套装 / 认不出类型：只带 id，面板里再拉 x/garb/v2/mall/suit/detail */
-  if (r.id) {
+  /* 主题套装 / 认不出类型：带 id，同时如果带图也拼成基础组件以防拉详情失败 */
+  if (r.id || img) {
+    var fallbackComps = {};
+    if (img) {
+      fallbackComps.card = { id: id || 0, name: name, image: img, url: img };
+      fallbackComps.card_bg = { id: id || 0, name: name, image: img, url: img };
+      if (kind === 'skin') fallbackComps.skin = { id: id || 0, name: name, preview: img };
+    }
     return {
-      id: id,
+      id: id || name,
       name: name,
       preview: img,
-      components: {},
+      video_url: r.video_url || '',
+      ver: 1700000000,
+      components: fallbackComps,
       from: 'collect',
-      needResolve: true,
+      needResolve: !!r.id,
       typeName: r.typeName
     };
   }
@@ -1540,6 +1761,44 @@ function collectPendantItems(node, out, depth) {
   }
 }
 
+/* ---------- 收藏集卡片列表 (card_list) ----------
+   用户逛数字藏品 / 抽卡页时，把卡池里的立绘卡片直接提取为动态卡片 / 评论装扮候选 */
+function collectCardList(node, out, depth) {
+  if (!node || typeof node !== 'object' || depth > 10) return;
+  if (node instanceof Array) {
+    for (var i = 0; i < node.length; i++) collectCardList(node[i], out, depth + 1);
+    return;
+  }
+  if (node.card_list && node.card_list instanceof Array) {
+    for (var j = 0; j < node.card_list.length; j++) {
+      var c = node.card_list[j] || {};
+      var img = c.card_img || '';
+      if (isHttpUrl(img)) {
+        var cid = c.card_type_id || c.id || (j + 1);
+        var cname = c.card_name || ('卡片 ' + cid);
+        out.push({
+          id: cid,
+          name: cname,
+          preview: img,
+          ver: 1700000000,
+          components: {
+            card: { id: cid, name: cname, image: img, url: img },
+            card_bg: { id: cid, name: cname, image: img, url: img }
+          },
+          from: 'collect_card',
+          partial: true,
+          typeName: '动态卡片'
+        });
+      }
+    }
+  }
+  for (var k in node) {
+    if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+    var v = node[k];
+    if (v && typeof v === 'object' && k !== 'card_list') collectCardList(v, out, depth + 1);
+  }
+}
+
 /* ---------- 统一入口：从任意 garb/vas 响应里挖候选 ----------
    一条响应里可能同时有多种东西（suit_items 套装 + collect_infos 兑换物 +
    asset 列表），所以一次遍历全试一遍，最后统一写存储、只 $done 一次。 */
@@ -1548,11 +1807,13 @@ function handleCandidates(url) {
   if (typeof body !== 'string' || body.length < 16 || body.length > 4194304) return $done({});
 
   var profile = PROFILE_RE.test(url);
-  /* 便宜的前置判断：没这三样、又不是空间/我的页，就别白解析一遍 JSON
+  /* 便宜的前置判断：没这几样、又不是空间/我的页，就别白解析一遍 JSON
      （x/garb/mall/suit/all 那种全量目录能有好几 MB）。 */
   var maybe =
     body.indexOf('suit_items') >= 0 ||
     body.indexOf('redeem_item') >= 0 ||
+    body.indexOf('card_list') >= 0 ||
+    body.indexOf('collect_list') >= 0 ||
     body.indexOf('"part"') >= 0 ||
     /\/pendant\//.test(url);
   if (!maybe && !profile) return $done({});
@@ -1576,12 +1837,21 @@ function handleCandidates(url) {
   }
 
   /* 2) 收藏集兑换物 */
-  if (body.indexOf('redeem_item') >= 0) {
+  if (body.indexOf('redeem_item') >= 0 || body.indexOf('collect_list') >= 0) {
     var redeems = [];
     collectRedeems(json, redeems, 0);
     for (var r = 0; r < redeems.length && out.length < 60; r++) {
       var re = equipFromRedeem(redeems[r]);
       if (re) out.push(re);
+    }
+  }
+
+  /* 2.5) 收藏集立绘卡片 */
+  if (body.indexOf('card_list') >= 0) {
+    var cards = [];
+    collectCardList(json, cards, 0);
+    for (var c = 0; c < cards.length && out.length < 90; c++) {
+      out.push(cards[c]);
     }
   }
 
@@ -1630,41 +1900,111 @@ function handleCandidates(url) {
 function rewriteMember(m, selfMid, card, pendant, all) {
   if (!m || typeof m !== 'object') return 0;
   var mid = m.mid != null ? String(m.mid) : m.mid_str != null ? String(m.mid_str) : '';
-  if (!all && (!selfMid || !mid || mid !== selfMid)) return 0;
+  if (!mid) return 0;
+  if (!all && (!selfMid || mid !== selfMid)) return 0;
 
   var n = 0;
-  var sailing = m.user_sailing;
-  if (sailing && typeof sailing === 'object') {
-    if (pendant && sailing.pendant) {
-      sailing.pendant = mergePendant(sailing.pendant, pendant);
+  if (pendant) {
+    var pImg = pendant.image || pendant.url;
+    var pId = Number(pendant.id) || 1;
+    var pName = pendant.name || '';
+    if (!m.user_sailing || typeof m.user_sailing !== 'object') m.user_sailing = {};
+    if (!m.user_sailing.pendant || typeof m.user_sailing.pendant !== 'object') {
+      m.user_sailing.pendant = {
+        id: pId,
+        name: pName,
+        image: pImg,
+        jump_url: '',
+        type: 'suit',
+        image_enhance: pendant.image_enhance || pImg,
+        image_enhance_frame: ''
+      };
+      n++;
+    } else {
+      m.user_sailing.pendant = mergePendant(m.user_sailing.pendant, pendant);
       n++;
     }
-    if (card && sailing.card_bg) {
-      sailing.card_bg = mergeCard(sailing.card_bg, card);
+
+    if (!m.pendant || typeof m.pendant !== 'object') {
+      m.pendant = {
+        pid: pId,
+        name: pName,
+        image: pImg,
+        expire: 0,
+        image_enhance: pendant.image_enhance || pImg,
+        image_enhance_frame: ''
+      };
+      n++;
+    } else {
+      m.pendant = mergePendant(m.pendant, pendant);
+      if (!m.pendant.pid || m.pendant.pid === 0) m.pendant.pid = pId;
       n++;
     }
   }
-  var sailing2 = m.user_sailing_v2;
-  if (sailing2 && typeof sailing2 === 'object') {
-    if (card && sailing2.card_bg) {
-      sailing2.card_bg = mergeCard(sailing2.card_bg, card);
+
+  if (card) {
+    var cImg = card.image || card.url;
+    var cId = Number(card.id) || 1;
+    var cName = card.name || '';
+    if (!m.user_sailing || typeof m.user_sailing !== 'object') m.user_sailing = {};
+
+    /* ⚠️ 字段名是实测出来的，别想当然：
+         2026-10-18 拉线上评论接口（x/v2/reply，aid=117451148822815）实际结构：
+           member.user_sailing    = { pendant:null, cardbg:{…}, cardbg_with_focus:null }
+           member.user_sailing_v2 = { card_bg:{…} }
+       v1 里是 **cardbg**（没有下划线），v2 里才是 card_bg。
+       旧代码往 v1 写的是 user_sailing.card_bg —— App 不认识这个键，等于没改；
+       而 App 仍然拿 v1 里原来那套 cardbg 去渲染，于是「我们的卡 + 原来的卡」
+       两层叠在一起互相打架，表现就是「装扮卡片加载不出来 / 好像加载了两层」。 */
+    if (!m.user_sailing.cardbg || typeof m.user_sailing.cardbg !== 'object') {
+      m.user_sailing.cardbg = cardNode(null, card);
+      n++;
+    } else {
+      m.user_sailing.cardbg = mergeCard(m.user_sailing.cardbg, card);
       n++;
     }
-    if (card && sailing2.card_bg_with_focus) {
-      sailing2.card_bg_with_focus = mergeCard(sailing2.card_bg_with_focus, card);
+    /* 聚焦态只有原本就存在才补，避免给 App 塞出它不认识的结构 */
+    if (m.user_sailing.cardbg_with_focus !== undefined) {
+      m.user_sailing.cardbg_with_focus = mergeCard(m.user_sailing.cardbg_with_focus, card);
       n++;
     }
-  }
-  if (pendant && m.pendant && typeof m.pendant === 'object') {
-    m.pendant = mergePendant(m.pendant, pendant);
+    /* 旧版本写错的键，顺手清掉 */
+    if (m.user_sailing.card_bg !== undefined) delete m.user_sailing.card_bg;
+
+    if (!m.user_sailing_v2 || typeof m.user_sailing_v2 !== 'object') m.user_sailing_v2 = {};
+    m.user_sailing_v2.card_bg = mergeCard(m.user_sailing_v2.card_bg || {}, card);
     n++;
   }
+
   /* 通用字段一遍：image_enhance 之类的挂件动态形态 */
   n += rewriteByField(m, compsOf({ components: { pendant: pendant, card: card } }), 0);
   return n;
 }
 
-/* 保留原对象结构，只把图/名/id 换掉 */
+/* 新建一个 App 认识的卡片节点（只在原本没有卡时用）。
+   字段照抄线上结构：{id,name,image,jump_url,fan,type}，v1 还有 image_group。
+   fan 必须是 null 或完整对象 —— 塞个半成品会让粉丝牌那块渲染异常。 */
+function cardNode(orig, card) {
+  var out = {};
+  if (orig && typeof orig === 'object') {
+    for (var k in orig) {
+      if (Object.prototype.hasOwnProperty.call(orig, k)) out[k] = orig[k];
+    }
+  }
+  out.id = card.id || out.id || 0;
+  out.name = card.name || out.name || '';
+  out.image = card.image;
+  if (!out.type) out.type = 'suit';
+  if (out.jump_url == null) out.jump_url = '';
+  if (out.fan === undefined) out.fan = null;
+  if (out.image_group === undefined) out.image_group = null;
+  return out;
+}
+
+/* 保留原对象结构，只把图/名/id 换掉。
+   ⚠️ `image_preview_small` 也要一起换：卡片对象里它是「先画出来的小预览」，
+   只换 image 不换它，就会先看到旧卡的缩略图、再叠上我们的整图 ——
+   实机上看起来就是「加载了两层」。 */
 function mergeCard(orig, card) {
   if (typeof orig === 'string') return card.image;
   var out = {};
@@ -1674,6 +2014,7 @@ function mergeCard(orig, card) {
     }
   }
   out.image = card.image;
+  if (out.image_preview_small !== undefined) out.image_preview_small = card.image;
   if (card.id) out.id = card.id;
   if (card.name) out.name = card.name;
   return out;
@@ -1687,9 +2028,20 @@ function mergePendant(orig, pendant) {
       if (Object.prototype.hasOwnProperty.call(orig, k)) out[k] = orig[k];
     }
   }
-  out.image = pendant.image;
-  if (pendant.id) out.pid = pendant.id;
+  var img = pendant.image || pendant.url;
+  out.image = img;
+  var pid = Number(pendant.id) || 1;
+  out.pid = pid;
+  out.id = pid;
   if (pendant.name) out.name = pendant.name;
+  /* 动态形态要么换成我们的，要么退到同一张静态图 ——
+     留着原来那套就是「旧挂件 + 新挂件」两层叠在头像上。 */
+  if (out.image_enhance !== undefined) {
+    out.image_enhance = pendant.image_enhance || img;
+  } else if (pendant.image_enhance) {
+    out.image_enhance = pendant.image_enhance;
+  }
+  if (out.image_enhance_frame !== undefined) out.image_enhance_frame = '';
   return out;
 }
 
@@ -1733,8 +2085,15 @@ function handleCard() {
   var body = $response && $response.body;
   if (typeof body !== 'string') return $done({});
   /* 评论/动态走 member.user_sailing*；动态信息流的作者节点是
-     modules.module_author，里面只有 pendant / card_bg —— 也要放进来。 */
-  if (body.indexOf('user_sailing') < 0 && body.indexOf('pendant') < 0 && body.indexOf('card_bg') < 0) {
+     modules.module_author，里面只有 pendant / card_bg —— 也要放进来。
+     若原本没有装扮节点，只要含 member 或 module_author 也应允许注入。 */
+  if (
+    body.indexOf('user_sailing') < 0 &&
+    body.indexOf('pendant') < 0 &&
+    body.indexOf('card_bg') < 0 &&
+    body.indexOf('member') < 0 &&
+    body.indexOf('module_author') < 0
+  ) {
     return $done({});
   }
 
@@ -1789,10 +2148,9 @@ function handleBusinessSplash(body, url) {
 
   var splash = readJSON(KEY_SPLASH, null);
   if (!splash || !isHttpUrl(splash.thumb)) return $done({});
-  if (splash.kind && splash.kind !== 'brand') return $done({});
 
   /* 把响应里所有「开屏创意图」字段换成选中的图 */
-  if (!replaceSplashImage(json, splash.thumb, 0)) return $done({});
+  if (!replaceSplashImage(json, splash.thumb, splash.md5 || '', 0)) return $done({});
   $done({ body: JSON.stringify(json) });
 }
 
@@ -1809,11 +2167,11 @@ var SPLASH_IMG_KEYS = {
 };
 
 /* 递归：在「含 id 的对象」里替换开屏创意图 */
-function replaceSplashImage(node, img, depth) {
+function replaceSplashImage(node, img, md5Val, depth) {
   if (!node || typeof node !== 'object' || depth > 10) return 0;
   var n = 0;
   if (node instanceof Array) {
-    for (var i = 0; i < node.length; i++) n += replaceSplashImage(node[i], img, depth + 1);
+    for (var i = 0; i < node.length; i++) n += replaceSplashImage(node[i], img, md5Val, depth + 1);
     return n;
   }
   var hasId = node.id != null || node.creative_id != null || node.splash_id != null;
@@ -1824,10 +2182,14 @@ function replaceSplashImage(node, img, depth) {
       /* url 这个键名太泛，只在明确是创意项（有 id）时换 */
       if (k === 'url' && !hasId) continue;
       node[k] = img;
+      if (md5Val) {
+        if ('hash' in node) node.hash = md5Val;
+        if ('md5' in node) node.md5 = md5Val;
+      }
       n++;
       continue;
     }
-    if (v && typeof v === 'object') n += replaceSplashImage(v, img, depth + 1);
+    if (v && typeof v === 'object') n += replaceSplashImage(v, img, md5Val, depth + 1);
   }
   return n;
 }
@@ -2494,22 +2856,26 @@ function handleChronosPkg() {
 
 /* ===================== 分派 ===================== */
 
+/* 注入页面脚本的目标页。
+   ⚠️ 这三处必须**同时**覆盖同一批页面，任何一处漂移都会让功能静默失效：
+     1) BiliSkinStudio.sgmodule 第 3 条 [Script] 的 pattern（决定脚本会不会被调用）
+     2) 这里（决定调用进来后走不走 handleInject）
+     3) src/bili_h5.js 的 isTargetPage（决定按钮挂不挂）
+   2026-10-18 踩过的坑：模块规则放宽到 /h5/garb/* 之后忘了同步这里，
+   抽卡页/数字藏品页虽然命中了规则，却掉进 handleCandidates 被当成 JSON
+   解析失败，脚本根本没注入。scripts/test-bili-module.js 会机械校验。 */
+var INJECT_RE = /^https?:\/\/www\.bilibili\.com\/(?:h5\/(?:mall|garb)\/|blackboard\/fe\/|garb\/)/;
+
 (function main() {
   var url = ($request && $request.url) || '';
 
   if (TYPE === 'http-request') return handleBridge();
   if (shouldLogApi(url)) logApi(url, $response && $response.body);
   if (/\/x\/resource\/show\/skin/.test(url)) return handleApply();
-  /* 装扮商城/详情/收藏集走 /h5/mall/，收藏集的「主题套装」预览页走
-     /blackboard/fe/suit-preview.html（独立活动页，不在 mall 下），
-     收藏集大厅走 /garb/collection-hall/。 */
-  if (
-    /^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html|garb\/collection-hall)/.test(
-      url
-    )
-  ) {
-    return handleInject();
-  }
+  /* 装扮商城/详情/收藏集走 /h5/mall/，抽卡与数字藏品走 /h5/garb/，
+     收藏集的「主题套装」预览页与相关活动页走 /blackboard/fe/，
+     收藏集大厅走 /garb/。 */
+  if (INJECT_RE.test(url)) return handleInject();
   /* 开屏动画（品牌 / 活动 / 新版 business list+show） */
   if (/\/x\/v2\/splash\//.test(url)) return handleSplash();
   /* Chronos 开屏包（只能回放服务端发过的三件套） */

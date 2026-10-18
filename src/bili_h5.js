@@ -301,6 +301,9 @@
   function bridgeReminderAdd(r) {
     return bpost('reminders/add', r);
   }
+  function bridgeDelisted() {
+    return bget('delisted');
+  }
 
   /* 拉一次设置，失败就用默认值 */
   async function loadPrefs() {
@@ -355,15 +358,19 @@
   function apiCollectRewards(actId, lotteryId) {
     var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
     return tryEndpoints([
+      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base,
+      API + '/x/vas/dlc_act/act/basic/v2?' + base,
+      API + '/x/vas/dlc_act/module/list?' + base,
       API + '/x/vas/dlc_act/asset_bag_list?' + base,
-      API + '/x/vas/dlc_act/asset_bag_v2?' + base,
-      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base
+      API + '/x/vas/dlc_act/asset_bag_v2?' + base
     ]);
   }
   /* 收藏集主页详情（返回 collect_infos 里的兑换物） */
   function apiLotteryDetail(actId, lotteryId) {
     var base = 'act_id=' + actId + (lotteryId ? '&lottery_id=' + lotteryId : '');
     return tryEndpoints([
+      API + '/x/vas/dlc_act/lottery/home_detail/v2?' + base,
+      API + '/x/vas/dlc_act/act/basic/v2?' + base,
       API + '/x/vas/dlc_act/act/card/detail?' + base,
       API + '/x/vas/dlc_act/card/widget_info_v2?' + base,
       API + '/x/vas/dlc_act/lottery_home_detail?' + base
@@ -646,6 +653,34 @@
     return '';
   }
 
+  /* 收藏集卡片列表 (card_list) 提取为动态卡片候选 */
+  function mapCollectionCards(raw) {
+    var out = [];
+    var list = (raw && raw.data && raw.data.card_list) || [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i] || {};
+      var img = c.card_img || '';
+      if (!isHttpUrl(img)) continue;
+      var cid = c.card_type_id || c.id || (i + 1);
+      var cname = c.card_name || ('卡片 ' + cid);
+      out.push({
+        id: cid,
+        name: cname,
+        preview: img,
+        ver: 1700000000,
+        components: {
+          card: { id: cid, name: cname, image: img, url: img },
+          card_bg: { id: cid, name: cname, image: img, url: img }
+        },
+        from: 'collect_card',
+        partial: true,
+        typeName: '动态卡片'
+      });
+    }
+    return out;
+  }
+
   /* 收藏集兑换物 -> 单组件候选。
      头像挂件 / 评论背景 / 动态卡片 这类**不是套装**，拿 id 去查详情查不到，
      但 collect_infos 里直接给了 redeem_item_image —— 有图就能当候选用。
@@ -662,13 +697,25 @@
       var id = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
       var hasImg = /^https?:\/\//.test(img);
 
+      var vUrl = '';
+      if (it.redeem_detail_videos && Array.isArray(it.redeem_detail_videos) && it.redeem_detail_videos.length) {
+        vUrl = it.redeem_detail_videos[0];
+      }
+
       if (!kind || kind === 'skin' || !hasImg) {
         if (id) {
+          var fb = {};
+          if (hasImg) {
+            fb.card = { id: id || 0, name: name, image: img, url: img };
+            fb.card_bg = { id: id || 0, name: name, image: img, url: img };
+            if (kind === 'skin') fb.skin = { id: id || 0, name: name, preview: img };
+          }
           out.push({
             id: id,
             name: name,
             preview: hasImg ? img : '',
-            components: {},
+            video_url: vUrl,
+            components: fb,
             from: 'collect',
             needResolve: true,
             typeName: it.redeem_item_type_name || ''
@@ -685,6 +732,7 @@
         id: id || name,
         name: name,
         preview: img,
+        video_url: vUrl,
         ver: 1700000000,
         components: comps,
         from: 'collect',
@@ -924,6 +972,18 @@
         var extra = mapRedeemIds(rawList[r2i]);
         for (var n = 0; n < extra.length; n++) {
           if (ids.indexOf(extra[n]) < 0) ids.push(extra[n]);
+        }
+        /* 收藏集卡片列表 (card_list) 也是组件候选 */
+        var cardHits = mapCollectionCards(rawList[r2i]);
+        for (var ch = 0; ch < cardHits.length; ch++) {
+          var dupC = false;
+          for (var qc = 0; qc < merged.length; qc++) {
+            if (String(merged[qc].id) === String(cardHits[ch].id)) {
+              dupC = true;
+              break;
+            }
+          }
+          if (!dupC) merged.push(cardHits[ch]);
         }
         /* 头像挂件 / 评论背景这类不是套装，id 查不出详情，直接按图拼候选 */
         var partials = mapRedeemComponents(rawList[r2i]);
@@ -1351,6 +1411,7 @@
 
     var acts = [
       { key: 'browse', label: t('browse'), pink: true },
+      { key: 'classic', label: '绝版装扮' },
       { key: 'settings', label: t('settings') }
     ];
     if (cur && cur.name) acts.push({ key: 'clear', label: t('clear') });
@@ -1397,6 +1458,13 @@
       });
     }
 
+    var classicBtn = panel.querySelector('[data-act="classic"]');
+    if (classicBtn) {
+      classicBtn.addEventListener('click', function () {
+        openClassic();
+      });
+    }
+
     var setBtn = panel.querySelector('[data-act="settings"]');
     if (setBtn) {
       setBtn.addEventListener('click', function () {
@@ -1421,7 +1489,10 @@
     openSheet(
       t('all'),
       t('allSub'),
-      [{ key: 'byid', label: t('byId') }],
+      [
+        { key: 'classic', label: '绝版 (30)' },
+        { key: 'byid', label: t('byId') }
+      ],
       '<input id="bss-q" placeholder="' + esc(t('search')) + '" ' +
         'style="width:100%;box-sizing:border-box;height:36px;padding:0 14px;border:none;' +
         'border-radius:18px;background:#f4f4f5;font-size:13px;outline:none">' +
@@ -1439,6 +1510,13 @@
     var catsEl = body.querySelector('#bss-cats');
     var gridEl = body.querySelector('#bss-grid');
     var moreEl = body.querySelector('#bss-more');
+
+    var classicNav = panel.querySelector('[data-act="classic"]');
+    if (classicNav) {
+      classicNav.addEventListener('click', function () {
+        openClassic();
+      });
+    }
 
     var st = {
       pn: 0,
@@ -1664,6 +1742,55 @@
       if (launcher) launcher.textContent = '应用装扮';
       toast('失败：' + e.message);
     }
+  }
+
+  /* 官方绝版/下架装扮库（30套主题 + 8套加载动画） */
+  async function openClassic() {
+    toast(t('loading'));
+    var res = null;
+    try {
+      res = await bridgeDelisted();
+    } catch (e) {}
+    var skins = (res && res.data && res.data.user_equip) || [];
+    var loads = (res && res.data && res.data.load_equip) || [];
+
+    var list = [];
+    for (var i = 0; i < skins.length; i++) {
+      var s = skins[i];
+      var matchedLoad = null;
+      for (var j = 0; j < loads.length; j++) {
+        if (loads[j].name === s.name || loads[j].id === s.id) {
+          matchedLoad = loads[j];
+          break;
+        }
+      }
+      var comps = {
+        skin: { id: s.id, name: s.name, package_url: s.package_url, package_md5: s.package_md5 }
+      };
+      if (matchedLoad) {
+        comps.loading = { id: matchedLoad.id, name: matchedLoad.name, loading_url: matchedLoad.loading_url };
+      }
+      list.push({
+        id: s.id,
+        name: s.name,
+        preview: s.preview,
+        ver: s.ver,
+        package_url: s.package_url,
+        package_md5: s.package_md5,
+        data: s.data,
+        components: comps,
+        from: 'classic',
+        typeName: '官方绝版'
+      });
+    }
+
+    openSheet(
+      '官方绝版/下架装扮库',
+      '收录 30 款经典官方下架皮肤与加载动画，CDN 资源仍可直连下载',
+      [],
+      gridHtml(list)
+    );
+    bindGridActions(panel.querySelector('#bss-body'), list);
   }
 
   /* ===================== 设置 / 导出导入 ===================== */
@@ -2019,14 +2146,14 @@
 
   /* 按钮该出现的页面：
      - /h5/mall/*                装扮商城、详情页、收藏集
-     - /blackboard/fe/suit-preview.html  收藏集的「主题套装」预览页（独立活动页）
-     - /garb/collection-hall/*   收藏集大厅
-     注意 /h5/garb/draw-card 这类抽卡页不放按钮——那里没有装扮包数据。 */
+     - /h5/garb/*                抽卡/数字藏品/装扮页
+     - /blackboard/fe/*          收藏集的「主题套装」预览页与相关活动页
+     - /garb/*                   收藏集大厅等 */
   function isTargetPage(p) {
     return (
-      /h5\/mall/.test(p) ||
-      /blackboard\/fe\/suit-preview\.html/.test(p) ||
-      /garb\/collection-hall/.test(p)
+      /h5\/(?:mall|garb)/.test(p) ||
+      /blackboard\/fe\//.test(p) ||
+      /garb\//.test(p)
     );
   }
 

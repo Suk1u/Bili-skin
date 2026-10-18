@@ -1773,6 +1773,351 @@ t('桥/found 过滤过期条目', async function () {
   assert(rb(r).data.length === 0, '过期的不返回');
 });
 
+t('我的页/用户原本没有挂件时依然能够成功注入挂件', async function () {
+  const NO_PENDANT_RESP = {
+    code: 0,
+    data: {
+      mid: 12345,
+      pendantUrl: '',
+      card: {
+        mid: 12345,
+        pendant: { pid: 0, name: '', image: '', expire: 0, image_enhance: '', image_enhance_frame: '' }
+      }
+    }
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify(NO_PENDANT_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl === 'https://i0.hdslb.com/pend.png', 'pendantUrl 注入');
+  assert(d.card.pendant.image === 'https://i0.hdslb.com/pend.png', 'pendant.image 注入');
+  assert(d.card.pendant.pid > 0, 'pid 变为有效数字');
+});
+
+t('我的页/只有挂件候选不动顶栏背景（preview 是挂件小图，别拿来当 header_bg）', async function () {
+  const PENDANT_ONLY = {
+    id: 1790565160001,
+    name: '收藏集挂件',
+    preview: 'https://i0.hdslb.com/bfs/garb/item/pend.png',
+    components: {
+      pendant: {
+        kind: 'pendant',
+        id: 1790565160001,
+        name: '收藏集挂件',
+        image: 'https://i0.hdslb.com/bfs/garb/item/pend.png',
+        url: 'https://i0.hdslb.com/bfs/garb/item/pend.png'
+      }
+    },
+    from: 'collect',
+    partial: true
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify({
+      code: 0,
+      data: {
+        mid: 12345,
+        pendantUrl: '',
+        header_bg: 'https://i0.hdslb.com/bfs/space/orig_header.jpg',
+        vip_space_label: 'https://i0.hdslb.com/bfs/space/orig_label.png'
+      }
+    }), { store: { BiliSkinEquip: JSON.stringify(PENDANT_ONLY) } })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl.indexOf('pend.png') >= 0, '挂件照常注入');
+  assert(
+    d.header_bg === 'https://i0.hdslb.com/bfs/space/orig_header.jpg',
+    '顶栏背景保持原样，实际：' + d.header_bg
+  );
+  assert(
+    d.vip_space_label === 'https://i0.hdslb.com/bfs/space/orig_label.png',
+    '顶栏标签图保持原样，实际：' + d.vip_space_label
+  );
+});
+
+t('我的页/新版 avatar.layers 挂件图层成功注入', async function () {
+  const MINE_AVATAR_RESP = {
+    code: 0,
+    data: {
+      mid: 12345,
+      avatar: {
+        container_size: { width: 1.35, height: 1.35 },
+        layers: [
+          {
+            is_critical_group: true,
+            layers: [
+              {
+                visible: true,
+                general_spec: { pos_spec: { coordinate_pos: 2, axis_x: 0.675, axis_y: 0.675 }, size_spec: { width: 1, height: 1 } },
+                resource: { res_type: 3, res_image: { image_src: { remote: { url: 'https://i0.hdslb.com/bfs/face/member/noface.jpg' } } } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify(MINE_AVATAR_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl === 'https://i0.hdslb.com/pend.png', 'pendantUrl 注入');
+  assert(d.pendant && d.pendant.image === 'https://i0.hdslb.com/pend.png', 'pendant 对象注入');
+  const sublayers = d.avatar.layers[0].layers;
+  const pLayer = sublayers.find(l => l.layer_config && l.layer_config.tags && l.layer_config.tags.PENDANT_LAYER);
+  assert(pLayer, 'avatar.layers 注入了 PENDANT_LAYER');
+  assert(pLayer.resource.res_image.image_src.remote.url === 'https://i0.hdslb.com/pend.png', '挂件图层 URL 注入正确');
+});
+
+t('评论装扮/用户原本没有 user_sailing 节点时依然能够成功注入', async function () {
+  const NO_SAILING_RESP = {
+    code: 0,
+    data: {
+      replies: [
+        { member: { mid: 100 } }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(NO_SAILING_RESP), {
+      store: {
+        BiliSkinEquip: JSON.stringify(EQUIP_ALL),
+        BiliSkinSelf: JSON.stringify({ mid: '100' })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing && m.user_sailing.pendant && m.user_sailing.pendant.image.indexOf('pend.png') >= 0, '注入了 pendant');
+  /* 真实字段名是 cardbg（没有下划线），见 user_sailing 结构实测 */
+  assert(m.user_sailing.cardbg && m.user_sailing.cardbg.image.indexOf('cardbg.png') >= 0, '注入了 cardbg');
+  assert(m.user_sailing.card_bg === undefined, '不该再写 App 不认识的 card_bg');
+  assert(m.user_sailing_v2 && m.user_sailing_v2.card_bg && m.user_sailing_v2.card_bg.image.indexOf('cardbg.png') >= 0, 'v2 也注入了');
+});
+
+/* 线上实测结构（aid=117451148822815）：v1 用 cardbg，v2 用 card_bg。
+   以前只写 v2、把 v1 的 cardbg 留着 → App 把「原来的卡」和「我们的卡」都画出来，
+   就是实机看到的「加载了两层、互相打架」。 */
+t('评论装扮/v1 的 cardbg 与 v2 的 card_bg 一起换，不留旧图', async function () {
+  const REAL_SHAPE = {
+    code: 0,
+    data: {
+      replies: [
+        {
+          member: {
+            mid: 100,
+            user_sailing: {
+              pendant: null,
+              cardbg: {
+                id: 35845,
+                name: '凡人修仙传',
+                image: 'https://i0.hdslb.com/bfs/garb/item/old_card.png',
+                jump_url: 'https://www.bilibili.com/h5/mall/...',
+                fan: { is_fan: 1, number: 598, color: '#0e8fd1', name: '凡人修仙传', num_desc: '000598' },
+                type: 'suit',
+                image_group: null
+              },
+              cardbg_with_focus: null
+            },
+            user_sailing_v2: {
+              card_bg: {
+                id: 35845,
+                name: '凡人修仙传',
+                image: 'https://i0.hdslb.com/bfs/garb/item/old_card.png',
+                type: 'suit'
+              }
+            }
+          }
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(REAL_SHAPE), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL), BiliSkinSelf: JSON.stringify({ mid: '100' }) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing.cardbg.image.indexOf('cardbg.png') >= 0, 'v1 cardbg 被换掉');
+  assert(m.user_sailing_v2.card_bg.image.indexOf('cardbg.png') >= 0, 'v2 card_bg 被换掉');
+  assert(m.user_sailing.cardbg.image === m.user_sailing_v2.card_bg.image, '两层是同一张图，不会互相打架');
+  assert(m.user_sailing.cardbg.fan && m.user_sailing.cardbg.fan.number === 598, '粉丝牌字段保留');
+  assert(m.user_sailing.cardbg.image_group === null, 'image_group 保留');
+});
+
+/* 卡片对象里 image_preview_small 是「先画的小预览」，挂件对象里 image_enhance 是
+   「动态形态」—— 这两个不跟着换，就会先画旧图再叠新图，实机看着像两层。 */
+t('评论装扮/预览图与挂件的动态形态一起换，不留旧图', async function () {
+  const body = {
+    code: 0,
+    data: {
+      replies: [
+        {
+          member: {
+            mid: 100,
+            user_sailing: {
+              pendant: {
+                pid: 9,
+                name: '旧挂件',
+                image: 'https://i0.hdslb.com/old_pend.png',
+                image_enhance: 'https://i0.hdslb.com/old_pend_ani.png',
+                image_enhance_frame: 'https://i0.hdslb.com/old_pend_frame.png',
+                expire: 0
+              },
+              cardbg: {
+                id: 1,
+                name: '旧卡',
+                image: 'https://i0.hdslb.com/old_card.png',
+                image_preview_small: 'https://i0.hdslb.com/old_card_small.png',
+                type: 'suit'
+              }
+            },
+            user_sailing_v2: {
+              card_bg: {
+                id: 1,
+                name: '旧卡',
+                image: 'https://i0.hdslb.com/old_card.png',
+                image_preview_small: 'https://i0.hdslb.com/old_card_small.png',
+                type: 'suit'
+              }
+            }
+          }
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(body), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL), BiliSkinSelf: JSON.stringify({ mid: '100' }) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing.cardbg.image_preview_small.indexOf('cardbg.png') >= 0, '小预览也换了');
+  assert(m.user_sailing_v2.card_bg.image_preview_small.indexOf('cardbg.png') >= 0, 'v2 小预览也换了');
+  assert(m.user_sailing.pendant.image.indexOf('pend.png') >= 0, '挂件静态图换了');
+  assert(m.user_sailing.pendant.image_enhance.indexOf('pend.png') >= 0, '挂件动态形态不再留旧图');
+  assert(m.user_sailing.pendant.image_enhance_frame === '', '旧帧图清掉');
+});
+
+t('开屏/business show 支持收藏集或自定义开屏并同步换 hash', async function () {
+  const body = {
+    code: 0,
+    data: { id: 111, image_url: 'https://i0.hdslb.com/bfs/splash/orig.png', hash: 'orig_hash' }
+  };
+  const r = await runSurge(
+    resp('https://app.bilibili.com/x/v2/splash/show?id=1', JSON.stringify(body), {
+      store: {
+        BiliSkinSplash: JSON.stringify({
+          kind: 'collect',
+          thumb: 'https://i0.hdslb.com/bfs/splash/collect.png',
+          md5: 'new_md5_hash'
+        })
+      }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.image_url === 'https://i0.hdslb.com/bfs/splash/collect.png', '开屏图换了');
+  assert(d.hash === 'new_md5_hash', 'hash 同步更新');
+});
+
+t('主题数据/保留 head_myself_* 等「我的」主页顶栏完整字段', async function () {
+  const fullSkinProps = {
+    color_mode: 'dark',
+    color: '#111',
+    head_myself_mp4_bg: 'https://i0.hdslb.com/head_mp4.mp4',
+    head_myself_squared_bg: 'https://i0.hdslb.com/head_square.jpg',
+    tail_icon_myself: 'https://i0.hdslb.com/tail_my.png'
+  };
+  const equip = {
+    id: 100,
+    package_url: 'https://i0.hdslb.com/skin.zip',
+    data: fullSkinProps
+  };
+  const r = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(equip) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data.user_equip.data;
+  assert(d.head_myself_mp4_bg === 'https://i0.hdslb.com/head_mp4.mp4', 'head_myself_mp4_bg 保留');
+  assert(d.head_myself_squared_bg === 'https://i0.hdslb.com/head_square.jpg', 'head_myself_squared_bg 保留');
+});
+
+t('收藏集/home_detail_v2 动态主题套装与 card_list 嗅探与注入', async function () {
+  const HOME_DETAIL_RESP = {
+    code: 0,
+    data: {
+      lottery_id: 114676,
+      name: '艾尔莎只想宅在家',
+      card_list: [
+        { card_type_id: 1001, card_name: '狼出没注意', card_img: 'https://i0.hdslb.com/bfs/card1.png' }
+      ],
+      collect_list: [
+        {
+          collect_id: 114679,
+          redeem_item_type: 5,
+          redeem_item_id: '1791739296001&1791739013001',
+          redeem_item_name: '艾尔莎只想宅在家',
+          redeem_item_image: 'https://i0.hdslb.com/bfs/suit_preview.png',
+          redeem_item_type_name: '动态主题套装',
+          redeem_detail_videos: ['https://hdslb.com/video.mp4']
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp('https://api.bilibili.com/x/vas/dlc_act/lottery/home_detail/v2?act_id=114675', JSON.stringify(HOME_DETAIL_RESP), {
+      store: {}
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const found = JSON.parse(stored(r, 'BiliSkinFound') || '[]');
+  const suit = found.map(x => x.equip).find(f => f.name === '艾尔莎只想宅在家');
+  assert(suit, '提取到了动态主题套装');
+  assert(suit.video_url === 'https://hdslb.com/video.mp4', '提取到了视频 URL');
+  const card = found.map(x => x.equip).find(f => f.name === '狼出没注意');
+  assert(card, '提取到了 card_list 中的立绘卡片');
+
+  // 测试该动态主题套装注入到 skin
+  const applyResp = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(suit) }
+    })
+  );
+  const uEquip = JSON.parse(bodyText(applyResp)).data.user_equip;
+  assert(uEquip && uEquip.package_url, '无自带包的动态主题自动获得了官方基底包');
+  assert(uEquip.data.head_myself_mp4_bg === 'https://hdslb.com/video.mp4', '动效视频成功注入');
+});
+
+t('桥/delisted 返回官方下架/绝版主题库并支持应用', async function () {
+  const r = await runSurge(req('delisted'));
+  const d = rb(r).data;
+  assert(d && d.user_equip && d.user_equip.length >= 30, '包含至少30套绝版主题: ' + (d && d.user_equip && d.user_equip.length));
+  assert(d && d.load_equip && d.load_equip.length >= 8, '包含至少8套绝版加载动画: ' + (d && d.load_equip && d.load_equip.length));
+  const miku = d.user_equip.find(x => x.name === '初音未来-日版');
+  assert(miku && miku.package_url && miku.package_md5, '初音未来包体完整');
+
+  // 测试该官方下架主题应用到 skin
+  const applyResp = await runSurge(
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), {
+      store: { BiliSkinEquip: JSON.stringify(miku) }
+    })
+  );
+  const uEquip = JSON.parse(bodyText(applyResp)).data.user_equip;
+  assert(uEquip.id === miku.id, '绝版主题 id 正确');
+  assert(uEquip.package_url === miku.package_url, '绝版主题 package_url 注入成功');
+});
+
 /* ---------- 运行 ---------- */
 
 (async function () {
