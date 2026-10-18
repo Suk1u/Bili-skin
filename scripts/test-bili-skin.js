@@ -1895,7 +1895,116 @@ t('评论装扮/用户原本没有 user_sailing 节点时依然能够成功注�
   assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
   const m = JSON.parse(bodyText(r)).data.replies[0].member;
   assert(m.user_sailing && m.user_sailing.pendant && m.user_sailing.pendant.image.indexOf('pend.png') >= 0, '注入了 pendant');
-  assert(m.user_sailing.card_bg && m.user_sailing.card_bg.image.indexOf('cardbg.png') >= 0, '注入了 card_bg');
+  /* 真实字段名是 cardbg（没有下划线），见 user_sailing 结构实测 */
+  assert(m.user_sailing.cardbg && m.user_sailing.cardbg.image.indexOf('cardbg.png') >= 0, '注入了 cardbg');
+  assert(m.user_sailing.card_bg === undefined, '不该再写 App 不认识的 card_bg');
+  assert(m.user_sailing_v2 && m.user_sailing_v2.card_bg && m.user_sailing_v2.card_bg.image.indexOf('cardbg.png') >= 0, 'v2 也注入了');
+});
+
+/* 线上实测结构（aid=117451148822815）：v1 用 cardbg，v2 用 card_bg。
+   以前只写 v2、把 v1 的 cardbg 留着 → App 把「原来的卡」和「我们的卡」都画出来，
+   就是实机看到的「加载了两层、互相打架」。 */
+t('评论装扮/v1 的 cardbg 与 v2 的 card_bg 一起换，不留旧图', async function () {
+  const REAL_SHAPE = {
+    code: 0,
+    data: {
+      replies: [
+        {
+          member: {
+            mid: 100,
+            user_sailing: {
+              pendant: null,
+              cardbg: {
+                id: 35845,
+                name: '凡人修仙传',
+                image: 'https://i0.hdslb.com/bfs/garb/item/old_card.png',
+                jump_url: 'https://www.bilibili.com/h5/mall/...',
+                fan: { is_fan: 1, number: 598, color: '#0e8fd1', name: '凡人修仙传', num_desc: '000598' },
+                type: 'suit',
+                image_group: null
+              },
+              cardbg_with_focus: null
+            },
+            user_sailing_v2: {
+              card_bg: {
+                id: 35845,
+                name: '凡人修仙传',
+                image: 'https://i0.hdslb.com/bfs/garb/item/old_card.png',
+                type: 'suit'
+              }
+            }
+          }
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(REAL_SHAPE), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL), BiliSkinSelf: JSON.stringify({ mid: '100' }) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing.cardbg.image.indexOf('cardbg.png') >= 0, 'v1 cardbg 被换掉');
+  assert(m.user_sailing_v2.card_bg.image.indexOf('cardbg.png') >= 0, 'v2 card_bg 被换掉');
+  assert(m.user_sailing.cardbg.image === m.user_sailing_v2.card_bg.image, '两层是同一张图，不会互相打架');
+  assert(m.user_sailing.cardbg.fan && m.user_sailing.cardbg.fan.number === 598, '粉丝牌字段保留');
+  assert(m.user_sailing.cardbg.image_group === null, 'image_group 保留');
+});
+
+/* 卡片对象里 image_preview_small 是「先画的小预览」，挂件对象里 image_enhance 是
+   「动态形态」—— 这两个不跟着换，就会先画旧图再叠新图，实机看着像两层。 */
+t('评论装扮/预览图与挂件的动态形态一起换，不留旧图', async function () {
+  const body = {
+    code: 0,
+    data: {
+      replies: [
+        {
+          member: {
+            mid: 100,
+            user_sailing: {
+              pendant: {
+                pid: 9,
+                name: '旧挂件',
+                image: 'https://i0.hdslb.com/old_pend.png',
+                image_enhance: 'https://i0.hdslb.com/old_pend_ani.png',
+                image_enhance_frame: 'https://i0.hdslb.com/old_pend_frame.png',
+                expire: 0
+              },
+              cardbg: {
+                id: 1,
+                name: '旧卡',
+                image: 'https://i0.hdslb.com/old_card.png',
+                image_preview_small: 'https://i0.hdslb.com/old_card_small.png',
+                type: 'suit'
+              }
+            },
+            user_sailing_v2: {
+              card_bg: {
+                id: 1,
+                name: '旧卡',
+                image: 'https://i0.hdslb.com/old_card.png',
+                image_preview_small: 'https://i0.hdslb.com/old_card_small.png',
+                type: 'suit'
+              }
+            }
+          }
+        }
+      ]
+    }
+  };
+  const r = await runSurge(
+    resp(REPLY_URL, JSON.stringify(body), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL), BiliSkinSelf: JSON.stringify({ mid: '100' }) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const m = JSON.parse(bodyText(r)).data.replies[0].member;
+  assert(m.user_sailing.cardbg.image_preview_small.indexOf('cardbg.png') >= 0, '小预览也换了');
+  assert(m.user_sailing_v2.card_bg.image_preview_small.indexOf('cardbg.png') >= 0, 'v2 小预览也换了');
+  assert(m.user_sailing.pendant.image.indexOf('pend.png') >= 0, '挂件静态图换了');
+  assert(m.user_sailing.pendant.image_enhance.indexOf('pend.png') >= 0, '挂件动态形态不再留旧图');
+  assert(m.user_sailing.pendant.image_enhance_frame === '', '旧帧图清掉');
 });
 
 t('开屏/business show 支持收藏集或自定义开屏并同步换 hash', async function () {

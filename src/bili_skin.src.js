@@ -552,7 +552,15 @@ function pendantOf(e) {
   if (!c) return null;
   var img = c.image || c.url || '';
   if (!isHttpUrl(img)) return null;
-  return { id: c.id || 0, name: c.name || (e && e.name) || '', image: img };
+  /* 动态形态（image_enhance）单独带出来：App 优先画它，
+     不一起换掉的话静态图会被旧的动态形态盖住（实机上像「两层」）。 */
+  var enh = c.image_enhance || c.imageEnhance || c.enhance || '';
+  return {
+    id: c.id || 0,
+    name: c.name || (e && e.name) || '',
+    image: img,
+    image_enhance: isHttpUrl(enh) ? enh : ''
+  };
 }
 
 /* 装扮 -> 各组件要用的图。给「按字段名换图」的通用改写用。 */
@@ -1939,20 +1947,29 @@ function rewriteMember(m, selfMid, card, pendant, all) {
     var cId = Number(card.id) || 1;
     var cName = card.name || '';
     if (!m.user_sailing || typeof m.user_sailing !== 'object') m.user_sailing = {};
-    if (!m.user_sailing.card_bg || typeof m.user_sailing.card_bg !== 'object') {
-      m.user_sailing.card_bg = {
-        id: cId,
-        name: cName,
-        image: cImg,
-        jump_url: '',
-        fan: { is_fan: 0, number: 0, color: '', name: '', num_desc: '' },
-        type: 'suit'
-      };
+
+    /* ⚠️ 字段名是实测出来的，别想当然：
+         2026-10-18 拉线上评论接口（x/v2/reply，aid=117451148822815）实际结构：
+           member.user_sailing    = { pendant:null, cardbg:{…}, cardbg_with_focus:null }
+           member.user_sailing_v2 = { card_bg:{…} }
+       v1 里是 **cardbg**（没有下划线），v2 里才是 card_bg。
+       旧代码往 v1 写的是 user_sailing.card_bg —— App 不认识这个键，等于没改；
+       而 App 仍然拿 v1 里原来那套 cardbg 去渲染，于是「我们的卡 + 原来的卡」
+       两层叠在一起互相打架，表现就是「装扮卡片加载不出来 / 好像加载了两层」。 */
+    if (!m.user_sailing.cardbg || typeof m.user_sailing.cardbg !== 'object') {
+      m.user_sailing.cardbg = cardNode(null, card);
       n++;
     } else {
-      m.user_sailing.card_bg = mergeCard(m.user_sailing.card_bg, card);
+      m.user_sailing.cardbg = mergeCard(m.user_sailing.cardbg, card);
       n++;
     }
+    /* 聚焦态只有原本就存在才补，避免给 App 塞出它不认识的结构 */
+    if (m.user_sailing.cardbg_with_focus !== undefined) {
+      m.user_sailing.cardbg_with_focus = mergeCard(m.user_sailing.cardbg_with_focus, card);
+      n++;
+    }
+    /* 旧版本写错的键，顺手清掉 */
+    if (m.user_sailing.card_bg !== undefined) delete m.user_sailing.card_bg;
 
     if (!m.user_sailing_v2 || typeof m.user_sailing_v2 !== 'object') m.user_sailing_v2 = {};
     m.user_sailing_v2.card_bg = mergeCard(m.user_sailing_v2.card_bg || {}, card);
@@ -1964,7 +1981,30 @@ function rewriteMember(m, selfMid, card, pendant, all) {
   return n;
 }
 
-/* 保留原对象结构，只把图/名/id 换掉 */
+/* 新建一个 App 认识的卡片节点（只在原本没有卡时用）。
+   字段照抄线上结构：{id,name,image,jump_url,fan,type}，v1 还有 image_group。
+   fan 必须是 null 或完整对象 —— 塞个半成品会让粉丝牌那块渲染异常。 */
+function cardNode(orig, card) {
+  var out = {};
+  if (orig && typeof orig === 'object') {
+    for (var k in orig) {
+      if (Object.prototype.hasOwnProperty.call(orig, k)) out[k] = orig[k];
+    }
+  }
+  out.id = card.id || out.id || 0;
+  out.name = card.name || out.name || '';
+  out.image = card.image;
+  if (!out.type) out.type = 'suit';
+  if (out.jump_url == null) out.jump_url = '';
+  if (out.fan === undefined) out.fan = null;
+  if (out.image_group === undefined) out.image_group = null;
+  return out;
+}
+
+/* 保留原对象结构，只把图/名/id 换掉。
+   ⚠️ `image_preview_small` 也要一起换：卡片对象里它是「先画出来的小预览」，
+   只换 image 不换它，就会先看到旧卡的缩略图、再叠上我们的整图 ——
+   实机上看起来就是「加载了两层」。 */
 function mergeCard(orig, card) {
   if (typeof orig === 'string') return card.image;
   var out = {};
@@ -1974,6 +2014,7 @@ function mergeCard(orig, card) {
     }
   }
   out.image = card.image;
+  if (out.image_preview_small !== undefined) out.image_preview_small = card.image;
   if (card.id) out.id = card.id;
   if (card.name) out.name = card.name;
   return out;
@@ -1987,12 +2028,20 @@ function mergePendant(orig, pendant) {
       if (Object.prototype.hasOwnProperty.call(orig, k)) out[k] = orig[k];
     }
   }
-  out.image = pendant.image || pendant.url;
+  var img = pendant.image || pendant.url;
+  out.image = img;
   var pid = Number(pendant.id) || 1;
   out.pid = pid;
   out.id = pid;
   if (pendant.name) out.name = pendant.name;
-  if (pendant.image_enhance) out.image_enhance = pendant.image_enhance;
+  /* 动态形态要么换成我们的，要么退到同一张静态图 ——
+     留着原来那套就是「旧挂件 + 新挂件」两层叠在头像上。 */
+  if (out.image_enhance !== undefined) {
+    out.image_enhance = pendant.image_enhance || img;
+  } else if (pendant.image_enhance) {
+    out.image_enhance = pendant.image_enhance;
+  }
+  if (out.image_enhance_frame !== undefined) out.image_enhance_frame = '';
   return out;
 }
 
