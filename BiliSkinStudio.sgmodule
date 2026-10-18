@@ -8,7 +8,11 @@
 
 [Script]
 # 1. H5 页面与 Surge 的通信桥：接管 /x/surge-skin/*，直接返回假响应，不发网络请求。
-BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=262144,timeout=5,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+#    timeout 必须 ≥ 脚本内部的网络等待：splash/set 要拉图算 md5（20s）、
+#    chronos/set 要拉 .cron 包存本地（30s）。给小了 → $done 还没回调就被掐断，
+#    面板上表现为「保存失败」。
+#    max-size 要放得下整份导出（藏馆上限 300 套），256KB 会让 /import 报「请求体为空」。
+BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=2097152,timeout=40,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 2. 应用装扮：换「个性主题」（data.user_equip）与「加载动画」（data.load_equip），
 #    并顺手把响应里其它组件字段（挂件动态形态等）按字段名换掉。
@@ -29,7 +33,9 @@ BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?
 BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/|polymer\/web-dynamic\/|polymer\/v2\/dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）。
-BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+#    注：pattern 末尾不能再多一个 `/` —— 写成 `splash\//` 就变成要求双斜杠，
+#    整条规则永远不会命中，开屏静默失效（2026-10-18 修）。
+BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\/,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 7. Chronos 开屏包：捕获服务端发过的 {url, md5, sign}，并把响应换成选中的那一组。
 #    包体有 RSA 签名（服务端私钥），伪造不了，所以这里只做「回放」。
