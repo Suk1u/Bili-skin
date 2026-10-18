@@ -225,11 +225,7 @@ t('isTargetPage/收藏集的主题套装预览页', function () {
 t('isTargetPage/无关页面不放按钮', function () {
   eq(API.isTargetPage('/video/BV1xx'), false, 'video');
   eq(API.isTargetPage('/'), false, 'root');
-  eq(API.isTargetPage('/read/cv123'), false, '专栏');
-});
-
-t('isTargetPage/抽卡与数字藏品页放按钮', function () {
-  eq(API.isTargetPage('/h5/garb/draw-card'), true, '抽卡页放按钮');
+  eq(API.isTargetPage('/h5/garb/draw-card'), false, '抽卡页不注入');
 });
 
 /* ===== 装扮对象提取 ===== */

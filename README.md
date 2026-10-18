@@ -158,7 +158,6 @@ Chronos 开屏只能**回放**（包体有 RSA 签名，伪造不了）；
 npm run build:bili                 # 重建 bili_skin.js（保留模块里已有的 URL）
 npm run build:bili -- --repo u/r   # 把 raw URL 烘焙进模块
 npm run build:bili -- --check      # 校验模块与远端脚本是否对齐
-npm run verify                     # 交付前必跑：静态校验 + 语法 + 三套测试
 ```
 
 源码结构：
@@ -172,14 +171,8 @@ npm run verify                     # 交付前必跑：静态校验 + 语法 + �
 | `docs/装扮资源-来源接口注入.md` | 各装扮类型的来源 / 接口 / 注入位置逐条说明 |
 | `docs/可加功能清单.md` | 功能清单与状态（含已判定不可行的项） |
 | `scripts/build-bili.js` | 构建脚本 |
-| `scripts/test-bili-skin.js` | Surge 侧 117 个 mock 场景 |
-| `scripts/test-bili-h5.js` | H5 纯逻辑 72 个场景 |
-| `scripts/test-bili-module.js` | 模块 ↔ 脚本一致性 9 项（pattern 能否命中、分派是否同步、MITM 是否覆盖、桥的 size/timeout） |
-
-前两套测试是**按 URL 直接调 handler**，绕过了 `[Script]` 的 pattern，所以
-「正则写错」「规则放宽了但 `main()` 没跟上」这类问题它们抓不到 —— 那正是
-`test-bili-module.js` 存在的理由。改 `BiliSkinStudio.sgmodule` 的 pattern、
-`main()` 里的分派、或 `isTargetPage` 时，三处必须同步，跑一遍它就知道有没有漏。
+| `scripts/test-bili-skin.js` | Surge 侧 94 个 mock 场景 |
+| `scripts/test-bili-h5.js` | H5 纯逻辑 64 个场景 |
 
 `bili_skin.js` 是产物但**必须入库**——Surge 要从这个 URL 下载它。改完 `src/` 后记得重新构建并推送。
 

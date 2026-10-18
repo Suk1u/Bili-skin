@@ -8,33 +8,28 @@
 
 [Script]
 # 1. H5 页面与 Surge 的通信桥：接管 /x/surge-skin/*，直接返回假响应，不发网络请求。
-#    timeout 必须 ≥ 脚本内部的网络等待：splash/set 要拉图算 md5（20s），
-#    chronos/set 要拉 .cron 包存本地（30s）。给小了 → $done 还没回调就被掐断，
-#    面板上表现为「保存失败」。
-#    max-size 要放得下整份导出（藏馆上限 300 套，实测每套 ~1–3KB），
-#    256KB 会让 /import 报「请求体为空」。
-BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=2097152,timeout=40,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=262144,timeout=5,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 2. 应用装扮：换「个性主题」（data.user_equip）与「加载动画」（data.load_equip），
 #    并顺手把响应里其它组件字段（挂件动态形态等）按字段名换掉。
 BiliSkinApply = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/resource\/show\/skin(?:\?.*)?$,requires-body=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*、/h5/garb/*）、收藏集的「主题套装」预览页
+# 3. 注入页面脚本：装扮商城 / 详情页 / 收藏集（/h5/mall/*）、收藏集的「主题套装」预览页
 #    （/blackboard/fe/suit-preview.html）、收藏集大厅（/garb/collection-hall/*）。
-BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/(?:mall|garb)\/|blackboard\/fe\/|garb\/),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinInject = type=http-response,pattern=^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html|garb\/collection-hall),requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 4. 嗅探：记下这一路上加载过的装扮资源，供「应用装扮」按钮取用。三条来源：
 #    a) 套装详情里的整套 suit_items；
 #    b) 收藏集 collect_infos 里的 redeem_item_*（头像挂件 / 评论背景 / 主题套装…）；
 #    c) 已拥有资产列表 x/garb/user/asset/list、x/garb/user/pendant/list。
 #    b/c 会另存一份 7 天有效的「持久候选」，所以逛完收藏集再回面板也拿得到。
-BiliSkinSniff = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinSniff = type=http-response,pattern=^https?:\/\/api\.bilibili\.com\/x\/(?:garb|vas)\/,requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 5. 评论装扮 / 头像挂件：把「自己的」member.user_sailing_v2.card_bg、member.user_sailing.pendant 换成装扮里的图。
-BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic|polymer\/web-dynamic|polymer\/v2\/dynamic),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinCard = type=http-response,pattern=^https?:\/\/(?:api|app)\.bilibili\.com\/x\/(?:v2\/reply|dynamic\/|polymer\/web-dynamic\/|polymer\/v2\/dynamic\/),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
-# 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）；新版 business splash (show/list)。
-BiliSkinSplash = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/v2\/splash\/,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+# 6. 开屏动画：品牌 x/v2/splash/brand/list 插 list/show；活动 x/v2/splash/event/list2 换元素图字段（含 md5）。
+BiliSkinSplash = type=http-response,pattern=^https?:\/\/app\.bilibili\.com\/x\/v2\/splash\//,requires-body=true,max-size=2097152,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 7. Chronos 开屏包：捕获服务端发过的 {url, md5, sign}，并把响应换成选中的那一组。
 #    包体有 RSA 签名（服务端私钥），伪造不了，所以这里只做「回放」。
@@ -44,7 +39,7 @@ BiliSkinChronos = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.
 #    不猜结构，按字段名把命中的组件图换掉（挂件的 pendantUrl / pendant_url /
 #    image_enhance、空间海报的 image1..9_portrait、点赞的 image_ani、
 #    进度条的 *_png、加载动画的 loading_url）。
-BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/(?:v2\/space|v2\/account\/mine|v2\/account\/myinfo|space\/myinfo|member\/app\/pendant|vas\/digital|garb\/skin),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.com\/x\/(?:v2\/space|v2\/account\/mine|member\/app\/pendant|vas\/digital|garb\/skin),requires-body=true,max-size=4194304,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 9. gRPC 装扮服务（SailingEquipMulti / UserCardMulti）：改 protobuf 里自己的那条。
 #    binary-body-mode=true 才能改二进制。pattern 只圈 garb 相关方法，别的 gRPC 流量不碰。
@@ -52,11 +47,8 @@ BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.co
 BiliSkinGrpc = type=http-response,pattern=^https?:\/\/grpc\.biliapi\.net\/[^?]*[Gg]arb,requires-body=true,binary-body-mode=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 10. Chronos 包体本地缓存（*.cron）：本地存过同一份就直接吐本地字节，CDN 撤包后仍能回放。
-#     ⚠️ 这条会让 Surge 解密 B站的 CDN 主机。不想要就删掉这一行 + 下面 MITM 里的
-#     *.hdslb.com / *.bilivideo.* / *.bfcchronos.bilibili.com 三条通配符。
-#     注：Chronos 包实际下发在 queue.package.bfcchronos.bilibili.com，
-#     只写 hdslb/bilivideo 的话这条规则永远命中不了（2026-10-18 修）。
+#     ⚠️ 这条会让 Surge 解密 B站的 CDN 主机。不想要就删掉这一行 + 下面 MITM 里的 CDN 通配符。
 BiliSkinCache = type=http-response,pattern=^https?:\/\/[a-z0-9.-]*(?:hdslb|bilivideo|bilibili)\.(?:com|net)\/[^?]*\.cron,requires-body=true,binary-body-mode=true,max-size=4194304,timeout=30,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 [MITM]
-hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com, grpc.biliapi.net, *.bfcchronos.bilibili.com, *.hdslb.com, *.bilivideo.com, *.bilivideo.net
+hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com, grpc.biliapi.net, *.hdslb.com, *.bilivideo.com, *.bilivideo.net

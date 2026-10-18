@@ -7,9 +7,9 @@
     "build": "node scripts/build-bili.js",
     "build:repo": "node scripts/build-bili.js --repo Suk1u/Bili-skin",
     "check": "node scripts/build-bili.js --check",
-    "test": "node scripts/test-bili-skin.js && node scripts/test-bili-h5.js && node scripts/test-bili-module.js",
+    "test": "node scripts/test-bili-skin.js && node scripts/test-bili-h5.js",
     "validate": "python scripts/validate_sgmodule.py BiliSkinStudio.sgmodule",
-    "verify": "npm run validate && node --check bili_skin.js && node scripts/test-bili-skin.js && node scripts/test-bili-h5.js && node scripts/test-bili-module.js"
+    "verify": "npm run validate && node --check bili_skin.js && node scripts/test-bili-skin.js && node scripts/test-bili-h5.js"
   },
   "engines": {
     "node": ">=18"

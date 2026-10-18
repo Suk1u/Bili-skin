@@ -28,7 +28,6 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 const SRC_H5 = path.join(ROOT, 'src', 'bili_h5.js');
 const SRC_TPL = path.join(ROOT, 'src', 'bili_skin.src.js');
-const SRC_DELISTED = path.join(__dirname, 'delisted_skins.json');
 const OUT_JS = path.join(ROOT, 'bili_skin.js');
 const OUT_MODULE = path.join(ROOT, 'BiliSkinStudio.sgmodule');
 
@@ -74,9 +73,6 @@ function collectScriptPaths(module) {
 function buildScript() {
   const tpl = fs.readFileSync(SRC_TPL, 'utf8');
   const h5 = fs.readFileSync(SRC_H5, 'utf8');
-  const delisted = fs.existsSync(SRC_DELISTED)
-    ? fs.readFileSync(SRC_DELISTED, 'utf8')
-    : '{"user_equip":[],"load_equip":[]}';
 
   if (tpl.indexOf('__H5_PAYLOAD__') < 0) {
     throw new Error('模板缺少 __H5_PAYLOAD__ 占位符: ' + SRC_TPL);
@@ -90,10 +86,7 @@ function buildScript() {
   const safe = h5.replace(/<\/script/gi, '<\\/script');
 
   // JSON.stringify 会把反斜杠再转义一层，最终写进 HTML 的仍是 <\/script
-  let out = tpl.replace('__H5_PAYLOAD__', JSON.stringify(safe));
-  if (out.indexOf('__DELISTED_SKINS__') >= 0) {
-    out = out.replace('__DELISTED_SKINS__', JSON.stringify(JSON.parse(delisted)));
-  }
+  const out = tpl.replace('__H5_PAYLOAD__', JSON.stringify(safe));
 
   if (out.indexOf('__H5_PAYLOAD__') >= 0) throw new Error('占位符未被替换');
   new vm.Script(out, { filename: OUT_JS });
