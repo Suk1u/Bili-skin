@@ -802,7 +802,15 @@ function injectAvatarPendantLayer(avatar, pendantUrl) {
 function rewriteMineData(data, comps, equip) {
   if (!data || typeof data !== 'object') return false;
   var changed = false;
-  var bg = comps.space_bg || comps.card || equip.preview || (equip.data && equip.data.head_myself_bg) || '';
+  /* 顶栏背景只认「真的是背景图」的来源：空间海报 / 卡片组件，
+     或者整套主题自带的封面。
+     收藏集抓到的单组件候选（只有头像挂件）的 preview 就是挂件那张小图，
+     以前拿它当 header_bg，会把「我的」页顶栏糊成一张挂件。 */
+  var bg = comps.space_bg || comps.card || '';
+  var hasThemePkg = isHttpUrl(equip.package_url);
+  var themeBg = (equip.data && isHttpUrl(equip.data.head_myself_bg) && equip.data.head_myself_bg) || '';
+  if (!bg && (hasThemePkg || themeBg)) bg = themeBg || equip.preview || '';
+  if (!isHttpUrl(bg)) bg = '';
   if (bg) {
     if (data.header_bg !== bg) { data.header_bg = bg; changed = true; }
     if (data.vip_space_label !== bg) { data.vip_space_label = bg; changed = true; }
@@ -2799,22 +2807,26 @@ function handleChronosPkg() {
 
 /* ===================== 分派 ===================== */
 
+/* 注入页面脚本的目标页。
+   ⚠️ 这三处必须**同时**覆盖同一批页面，任何一处漂移都会让功能静默失效：
+     1) BiliSkinStudio.sgmodule 第 3 条 [Script] 的 pattern（决定脚本会不会被调用）
+     2) 这里（决定调用进来后走不走 handleInject）
+     3) src/bili_h5.js 的 isTargetPage（决定按钮挂不挂）
+   2026-10-18 踩过的坑：模块规则放宽到 /h5/garb/* 之后忘了同步这里，
+   抽卡页/数字藏品页虽然命中了规则，却掉进 handleCandidates 被当成 JSON
+   解析失败，脚本根本没注入。scripts/test-bili-module.js 会机械校验。 */
+var INJECT_RE = /^https?:\/\/www\.bilibili\.com\/(?:h5\/(?:mall|garb)\/|blackboard\/fe\/|garb\/)/;
+
 (function main() {
   var url = ($request && $request.url) || '';
 
   if (TYPE === 'http-request') return handleBridge();
   if (shouldLogApi(url)) logApi(url, $response && $response.body);
   if (/\/x\/resource\/show\/skin/.test(url)) return handleApply();
-  /* 装扮商城/详情/收藏集走 /h5/mall/，收藏集的「主题套装」预览页走
-     /blackboard/fe/suit-preview.html（独立活动页，不在 mall 下），
-     收藏集大厅走 /garb/collection-hall/。 */
-  if (
-    /^https?:\/\/www\.bilibili\.com\/(?:h5\/mall\/|blackboard\/fe\/suit-preview\.html|garb\/collection-hall)/.test(
-      url
-    )
-  ) {
-    return handleInject();
-  }
+  /* 装扮商城/详情/收藏集走 /h5/mall/，抽卡与数字藏品走 /h5/garb/，
+     收藏集的「主题套装」预览页与相关活动页走 /blackboard/fe/，
+     收藏集大厅走 /garb/。 */
+  if (INJECT_RE.test(url)) return handleInject();
   /* 开屏动画（品牌 / 活动 / 新版 business list+show） */
   if (/\/x\/v2\/splash\//.test(url)) return handleSplash();
   /* Chronos 开屏包（只能回放服务端发过的三件套） */

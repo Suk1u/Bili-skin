@@ -8,7 +8,12 @@
 
 [Script]
 # 1. H5 页面与 Surge 的通信桥：接管 /x/surge-skin/*，直接返回假响应，不发网络请求。
-BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=262144,timeout=5,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
+#    timeout 必须 ≥ 脚本内部的网络等待：splash/set 要拉图算 md5（20s），
+#    chronos/set 要拉 .cron 包存本地（30s）。给小了 → $done 还没回调就被掐断，
+#    面板上表现为「保存失败」。
+#    max-size 要放得下整份导出（藏馆上限 300 套，实测每套 ~1–3KB），
+#    256KB 会让 /import 报「请求体为空」。
+BiliSkinBridge = type=http-request,pattern=^https?:\/\/app\.bilibili\.com\/x\/surge-skin\/,requires-body=true,max-size=2097152,timeout=40,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 2. 应用装扮：换「个性主题」（data.user_equip）与「加载动画」（data.load_equip），
 #    并顺手把响应里其它组件字段（挂件动态形态等）按字段名换掉。
@@ -47,8 +52,11 @@ BiliSkinSpace = type=http-response,pattern=^https?:\/\/(?:app|api)\.bilibili\.co
 BiliSkinGrpc = type=http-response,pattern=^https?:\/\/grpc\.biliapi\.net\/[^?]*[Gg]arb,requires-body=true,binary-body-mode=true,max-size=1048576,timeout=10,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 # 10. Chronos 包体本地缓存（*.cron）：本地存过同一份就直接吐本地字节，CDN 撤包后仍能回放。
-#     ⚠️ 这条会让 Surge 解密 B站的 CDN 主机。不想要就删掉这一行 + 下面 MITM 里的 CDN 通配符。
+#     ⚠️ 这条会让 Surge 解密 B站的 CDN 主机。不想要就删掉这一行 + 下面 MITM 里的
+#     *.hdslb.com / *.bilivideo.* / *.bfcchronos.bilibili.com 三条通配符。
+#     注：Chronos 包实际下发在 queue.package.bfcchronos.bilibili.com，
+#     只写 hdslb/bilivideo 的话这条规则永远命中不了（2026-10-18 修）。
 BiliSkinCache = type=http-response,pattern=^https?:\/\/[a-z0-9.-]*(?:hdslb|bilivideo|bilibili)\.(?:com|net)\/[^?]*\.cron,requires-body=true,binary-body-mode=true,max-size=4194304,timeout=30,script-path=https://raw.githubusercontent.com/Suk1u/Bili-skin/main/bili_skin.js,script-update-interval=86400
 
 [MITM]
-hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com, grpc.biliapi.net, *.hdslb.com, *.bilivideo.com, *.bilivideo.net
+hostname = %APPEND% app.bilibili.com, api.bilibili.com, www.bilibili.com, grpc.biliapi.net, *.bfcchronos.bilibili.com, *.hdslb.com, *.bilivideo.com, *.bilivideo.net

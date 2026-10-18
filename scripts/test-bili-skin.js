@@ -1797,6 +1797,47 @@ t('我的页/用户原本没有挂件时依然能够成功注入挂件', async f
   assert(d.card.pendant.pid > 0, 'pid 变为有效数字');
 });
 
+t('我的页/只有挂件候选不动顶栏背景（preview 是挂件小图，别拿来当 header_bg）', async function () {
+  const PENDANT_ONLY = {
+    id: 1790565160001,
+    name: '收藏集挂件',
+    preview: 'https://i0.hdslb.com/bfs/garb/item/pend.png',
+    components: {
+      pendant: {
+        kind: 'pendant',
+        id: 1790565160001,
+        name: '收藏集挂件',
+        image: 'https://i0.hdslb.com/bfs/garb/item/pend.png',
+        url: 'https://i0.hdslb.com/bfs/garb/item/pend.png'
+      }
+    },
+    from: 'collect',
+    partial: true
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify({
+      code: 0,
+      data: {
+        mid: 12345,
+        pendantUrl: '',
+        header_bg: 'https://i0.hdslb.com/bfs/space/orig_header.jpg',
+        vip_space_label: 'https://i0.hdslb.com/bfs/space/orig_label.png'
+      }
+    }), { store: { BiliSkinEquip: JSON.stringify(PENDANT_ONLY) } })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.pendantUrl.indexOf('pend.png') >= 0, '挂件照常注入');
+  assert(
+    d.header_bg === 'https://i0.hdslb.com/bfs/space/orig_header.jpg',
+    '顶栏背景保持原样，实际：' + d.header_bg
+  );
+  assert(
+    d.vip_space_label === 'https://i0.hdslb.com/bfs/space/orig_label.png',
+    '顶栏标签图保持原样，实际：' + d.vip_space_label
+  );
+});
+
 t('我的页/新版 avatar.layers 挂件图层成功注入', async function () {
   const MINE_AVATAR_RESP = {
     code: 0,
