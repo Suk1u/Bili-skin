@@ -675,6 +675,85 @@ t('应用/只有加载动画也能注入（保留原主题）', async function (
   assert(out.data.load_equip.id === 2, '加载动画注入');
 });
 
+t('应用/common_equip 也一起换（否则切到动态/我的会闪一下掉回默认）', async function () {
+  const body = {
+    code: 0,
+    message: '0',
+    ttl: 1,
+    data: {
+      user_equip: {
+        id: 1111,
+        name: '原本的装扮',
+        preview: 'http://i0.hdslb.com/orig.jpg',
+        ver: 1598600025,
+        package_url: 'http://i0.hdslb.com/orig.zip',
+        package_md5: 'aaa',
+        data: { color_mode: 'light', color: '#000000' }
+      },
+      /* BFCMultiTheme 的第二份装备：多主题 / 跟随系统时用这份重新上色 */
+      common_equip: {
+        id: 2222,
+        name: '默认主题',
+        preview: 'http://i0.hdslb.com/common.jpg',
+        ver: 1598600001,
+        package_url: 'http://i0.hdslb.com/common.zip',
+        package_md5: 'bbb',
+        data: { color_mode: 'light', color: '#212121' },
+        keep_me: 'untouched'
+      }
+    }
+  };
+  const r = await runSurgeScript(
+    SRC,
+    resp(SKIN_URL, JSON.stringify(body), { store: { BiliSkinEquip: JSON.stringify(EQUIP_FULL) } })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(r.result.body).data;
+  assert(d.user_equip.id === 67790, 'user_equip 换了');
+  assert(d.common_equip.id === 67790, 'common_equip 也换了');
+  assert(
+    d.common_equip.package_url === d.user_equip.package_url,
+    '两份装备指向同一个包，切页不会掉回默认'
+  );
+  assert(d.common_equip.keep_me === 'untouched', '原有其它字段保留');
+});
+
+t('应用/响应里没有 common_equip 时不硬塞', async function () {
+  const r = await runSurgeScript(
+    SRC,
+    resp(SKIN_URL, JSON.stringify(SKIN_RESP), { store: { BiliSkinEquip: JSON.stringify(EQUIP_FULL) } })
+  );
+  const d = JSON.parse(r.result.body).data;
+  assert(d.common_equip === undefined, '不该凭空造 common_equip');
+});
+
+t('我的页/响应里带主题装备时一起换（进 tab 不再被默认主题覆盖）', async function () {
+  const body = {
+    code: 0,
+    data: {
+      mid: 12345,
+      pendantUrl: '',
+      user_equip: {
+        id: 1111,
+        name: '默认主题',
+        preview: 'https://i0.hdslb.com/default.jpg',
+        ver: 1,
+        package_url: 'https://i0.hdslb.com/default.zip',
+        package_md5: 'zzz',
+        data: { color_mode: 'light', color: '#212121' }
+      }
+    }
+  };
+  const r = await runSurge(
+    resp(MINE_URL, JSON.stringify(body), {
+      store: { BiliSkinEquip: JSON.stringify(EQUIP_ALL) }
+    })
+  );
+  assert(!r.errors.length, 'no errors: ' + r.errors.join('|'));
+  const d = JSON.parse(bodyText(r)).data;
+  assert(d.user_equip.id === EQUIP_ALL.id, '我的页的 user_equip 被换成注入的主题，实际：' + d.user_equip.id);
+});
+
 t('评论装扮/只改自己的 member，别人的不动', async function () {
   const body = JSON.stringify({
     code: 0,

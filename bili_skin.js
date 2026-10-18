@@ -510,6 +510,26 @@ function skinOf(e, dark) {
   };
 }
 
+/* 把「当前装扮」铺到一份已有的装备对象上（保留原对象其它字段）。
+   用在 common_equip / 我的页这类「App 已经有自己一套结构」的地方，
+   整块替换容易丢掉 App 需要的字段。 */
+function mergeEquip(orig, skin) {
+  var out = {};
+  if (orig && typeof orig === 'object' && !(orig instanceof Array)) {
+    for (var k in orig) {
+      if (Object.prototype.hasOwnProperty.call(orig, k)) out[k] = orig[k];
+    }
+  }
+  out.id = skin.id || out.id || 0;
+  out.name = skin.name || out.name || '';
+  out.preview = skin.preview || out.preview || '';
+  out.ver = skin.ver;
+  out.package_url = skin.package_url;
+  out.package_md5 = skin.package_md5;
+  out.data = skin.data;
+  return out;
+}
+
 /* 装扮 -> load_equip（加载动画） */
 function loadingOf(e) {
   var c = e && e.components && e.components.loading;
@@ -745,6 +765,23 @@ function rewriteProfileBody(url, json) {
   var n = rewriteProfile(json, comps, 0);
   if (isMine && json.data) {
     if (rewriteMineData(json.data, comps, equip)) n++;
+  }
+
+  /* 「我的」/ 空间 这类页面的响应里有时也带着主题装备（user_equip / common_equip）。
+     不换掉的话，进这两个 tab 时 App 会拿服务端的默认主题把刚注入的覆盖掉，
+     表现就是「皮肤闪一下然后变回默认」。只在原响应确实有这个键时替换。 */
+  if (json.data && typeof json.data === 'object') {
+    var sk = skinOf(equip, false);
+    if (sk) {
+      if (json.data.user_equip !== undefined && typeof json.data.user_equip === 'object') {
+        json.data.user_equip = mergeEquip(json.data.user_equip, sk);
+        n++;
+      }
+      if (json.data.common_equip !== undefined && typeof json.data.common_equip === 'object') {
+        json.data.common_equip = mergeEquip(json.data.common_equip, sk);
+        n++;
+      }
+    }
   }
   return n > 0;
 }
@@ -1380,7 +1417,17 @@ function handleApply() {
 
   var skin = skinOf(equip, dark);
   if (skin) {
-    resp.data.user_equip = skin;
+    /* 合并而不是整块替换：原对象里可能还有主题引擎要的字段
+       （skin_mode / is_free / suits…），缺字段会被判成无效装备而回退默认主题。 */
+    resp.data.user_equip = mergeEquip(resp.data.user_equip, skin);
+    /* ⚠️ BFCMultiTheme 里有两份装备：user_equip（当前）+ common_equip（多主题 / 跟随系统用）。
+       只改 user_equip 的话，切到「动态」「我的」这种会重新读主题的页面时，
+       App 会按 common_equip 的原值（= 服务端默认主题）重新上色 ——
+       实机表现就是「皮肤闪一下，然后变成没皮肤样式」。
+       原响应里有这个键就一起换掉。 */
+    if (resp.data.common_equip && typeof resp.data.common_equip === 'object' && !(resp.data.common_equip instanceof Array)) {
+      resp.data.common_equip = mergeEquip(resp.data.common_equip, skin);
+    }
     changed = true;
   }
 
